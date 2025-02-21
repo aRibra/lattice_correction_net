@@ -1,0 +1,9 @@
+# requirements.txt
+matplotlib
+numba
+numpy
+scipy
+scikit-learn
+seaborn
+torch
+tqdm

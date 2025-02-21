@@ -1,0 +1,85 @@
+{
+    "data_shapes": {
+        "inputs_shape": [
+            18,
+            101,
+            16
+        ],
+        "targets_shape": [
+            18,
+            6
+        ],
+        "raw_input_tensors_shape": [
+            20,
+            101,
+            8,
+            2
+        ]
+    },
+    "data_sizes": {
+        "train_batch_size": 16,
+        "validation_batch_size": 16,
+        "train_dataset_size": 270,
+        "validation_dataset_size": 300
+    },
+    "network_topology": {
+        "input_shape": [
+            -1,
+            101,
+            16
+        ],
+        "output_shape": [
+            -1,
+            6
+        ]
+    },
+    "training_parameters": {
+        "num_epochs": 600,
+        "batch_size": 16,
+        "optimizer": "Adam",
+        "learning_rate": 0.001,
+        "criterion": "MSELoss",
+        "scheduler": "CyclicLR"
+    },
+    "device": "cuda",
+    "random_seed": 2801388963478224027,
+    "timestamp": "2025-01-13_06-31-50",
+    "model_type": "QuadErrorCorrectionLSTM",
+    "model_parameters": {
+        "input_size": 16,
+        "hidden_size": 256,
+        "num_layers": 1,
+        "output_size": null,
+        "is_bidirectional": true
+    },
+    "optimizer_type": "Adam",
+    "optimizer_params": {
+        "lr": 0.001,
+        "betas": [
+            0.9,
+            0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": 0,
+        "amsgrad": false,
+        "maximize": false,
+        "foreach": null,
+        "capturable": false,
+        "differentiable": false,
+        "fused": null
+    },
+    "scheduler_type": "CyclicLR",
+    "scheduler_params": {
+        "base_lr": 1e-10,
+        "max_lr": 0.001,
+        "mode": "triangular2",
+        "cycle_momentum": true,
+        "base_momentum": 0.8,
+        "max_momentum": 0.9
+    },
+    "criterion_type": "MSELoss",
+    "training_hyperparameters": {
+        "num_epochs": 600,
+        "nb_epoch_log": 10
+    }
+}

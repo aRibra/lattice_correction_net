@@ -1,0 +1,319 @@
+criterion_type: MSELoss
+data_shapes:
+  inputs_shape: !!python/tuple
+  - 1800
+  - 101
+  - 16
+  raw_input_tensors_shape: !!python/object/apply:torch.Size
+  - !!python/tuple
+    - 2000
+    - 101
+    - 8
+    - 2
+  targets_shape: !!python/tuple
+  - 1800
+  - 6
+data_sizes:
+  train_batch_size: 16
+  train_dataset_size: 1800
+  validation_batch_size: 16
+  validation_dataset_size: 200
+data_sub_cfg:
+  input_scaler_config:
+    data_max_:
+    - 1.1839856597362086e-05
+    - 0.00014924707647878677
+    data_min_:
+    - -1.192834406538168e-05
+    - -0.0001507360429968685
+    data_range_:
+    - 2.3768200662743766e-05
+    - 0.00029998311947565526
+    feature_range: &id004 !!python/tuple
+    - -1
+    - 1
+    min_:
+    - 0.0037229350793177574
+    - 0.004963501015271543
+    scale_:
+    - 84146.04152744994
+    - 6667.041810538634
+  merged_config:
+    G: 1.0
+    L_quad: 0.4
+    apply_avg: true
+    com_delta_range: !!python/tuple
+    - -5.0e-05
+    - 5.0e-05
+    config_name: Configuration 1
+    delta_range: !!python/tuple
+    - 0
+    - 5.0e-05
+    design_radius: 20.0
+    dipole_length_range:
+    - 0.2
+    - 14.0
+    dipole_tilt_angle_range: !!python/tuple
+    - 0
+    - 0.05
+    dipole_tilt_errors: null
+    end_rev: 6000
+    f: 15
+    figs_save_dir: exps/exp_LSTM_1000_mix/run_2025-01-17_00-19-35/figs
+    fodo_cell_indices:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    horizontal_tune_range:
+    - 0.1
+    - 0.8
+    mag_field_range:
+    - 0.1
+    - 2.0
+    n_FODO: 8
+    n_turns: 6000
+    num_particles: 10
+    p: 5.344286e-19
+    particles_sampling_method: from_twiss_params
+    planes:
+    - x
+    - y
+    q: 1.602e-19
+    quad_errors:
+    - FODO_index: 1
+      delta: 1.3223299762675984e-05
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 2
+      delta: -1.146700380856721e-06
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 3
+      delta: -9.209428872409446e-06
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 4
+      delta: 5.223183497350282e-05
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 5
+      delta: -2.7379388069997252e-05
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 7
+      delta: 6.555996758176734e-05
+      plane: vertical
+      quad_type: defocusing
+    quad_tilt_angle_range: !!python/tuple
+    - 0
+    - 0.01
+    quad_tilt_errors:
+    - FODO_index: 1
+      quad_type: defocusing
+      tilt_angle: -0.015086837558366714
+    - FODO_index: 3
+      quad_type: defocusing
+      tilt_angle: -0.007538273038851655
+    - FODO_index: 6
+      quad_type: defocusing
+      tilt_angle: 0.004406659617524457
+    random_criterion: normal
+    reject_multiple_error_types: false
+    sampling_circle_radius: 0.01
+    start_rev: 5500
+    target_data: quad_misalign_deltas
+    total_dipole_bending_angle_range: !!python/tuple
+    - 4.71238898038469
+    - 6.283185307179586
+    use_gpu: true
+    use_thin_lens: true
+    verbose: true
+    vertical_tune_range:
+    - 0.1
+    - 0.8
+    window_size: 10
+    x0_mean_std: &id001 !!python/tuple
+    - 0.0
+    - 0.05
+    xp0_mean_std: &id002 !!python/tuple
+    - 0.0
+    - 0.0
+    y0_mean_std: *id001
+    yp0_mean_std: *id002
+  overridden_base_config:
+    B: 0.16680043695380775
+    B_rho: 3.336008739076155
+    G: 1.0
+    L_dipole: !!python/object/apply:numpy.core.multiarray.scalar
+    - &id003 !!python/object/apply:numpy.dtype
+      args:
+      - f8
+      - false
+      - true
+      state: !!python/tuple
+      - 3
+      - <
+      - null
+      - null
+      - null
+      - -1
+      - -1
+      - 0
+    - !!binary |
+      Rur/ntuPF0A=
+    L_drift: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id003
+    - !!binary |
+      +tHuwhME6T8=
+    L_quad: 0.4
+    L_straight: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id003
+    - !!binary |
+      YDhVKXpqD0A=
+    Qx: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id003
+    - !!binary |
+      2Vzgugttzj8=
+    Qy: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id003
+    - !!binary |
+      21zgugttzj8=
+    config_name: Configuration 1
+    design_radius: 20.0
+    dipole_tilt_errors: null
+    f: 3.336008739076155
+    n_Dipoles: 16
+    n_FODO: 8
+    p: 5.344286e-19
+    q: 1.602e-19
+    quad_errors:
+    - FODO_index: 1
+      delta: 1.3223299762675984e-05
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 2
+      delta: -1.146700380856721e-06
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 3
+      delta: -9.209428872409446e-06
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 4
+      delta: 5.223183497350282e-05
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 5
+      delta: -2.7379388069997252e-05
+      plane: vertical
+      quad_type: defocusing
+    - FODO_index: 7
+      delta: 6.555996758176734e-05
+      plane: vertical
+      quad_type: defocusing
+    quad_tilt_errors:
+    - FODO_index: 1
+      quad_type: defocusing
+      tilt_angle: -0.015086837558366714
+    - FODO_index: 3
+      quad_type: defocusing
+      tilt_angle: -0.007538273038851655
+    - FODO_index: 6
+      quad_type: defocusing
+      tilt_angle: 0.004406659617524457
+    total_dipole_bending_angle: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id003
+    - !!binary |
+      0iEzf3zZEkA=
+  target_scaler_config:
+    data_max_:
+    - 0.0001666036987444386
+    - 0.00016375031555071473
+    - 0.00017221788584720343
+    - 0.0001665355812292546
+    - 0.00016060061170719564
+    - 0.00016754107491578907
+    data_min_:
+    - -0.00017651852976996452
+    - -0.00015352992340922356
+    - -0.00015139387687668204
+    - -0.00016012103878892958
+    - -0.0001443666114937514
+    - -0.00016949318523984402
+    data_range_:
+    - 0.0003431222285144031
+    - 0.0003172802389599383
+    - 0.0003236117627238855
+    - 0.0003266566200181842
+    - 0.00030496722320094705
+    - 0.0003370342601556331
+    feature_range: *id004
+    min_:
+    - 0.028895915803687888
+    - -0.03221250770295114
+    - -0.06434873935126084
+    - -0.019636958344722677
+    - -0.053231950775075365
+    - 0.005792023407808822
+    scale_:
+    - 5828.826679808204
+    - 6303.575686138247
+    - 6180.245066389801
+    - 6122.637281585369
+    - 6558.0818128844385
+    - 5934.114825823509
+device: cuda
+model_parameters:
+  hidden_size: 256
+  input_size: 16
+  is_bidirectional: true
+  num_layers: 1
+  output_size: null
+model_type: QuadErrorCorrectionLSTM
+network_topology:
+  input_shape: !!python/tuple
+  - -1
+  - 101
+  - 16
+  output_shape: !!python/tuple
+  - -1
+  - 6
+optimizer_params:
+  amsgrad: false
+  betas: !!python/tuple
+  - 0.9
+  - 0.999
+  capturable: false
+  differentiable: false
+  eps: 1.0e-08
+  foreach: null
+  fused: null
+  lr: 0.001
+  maximize: false
+  weight_decay: 0
+optimizer_type: Adam
+random_seed: 15595006905651371920
+scheduler_params:
+  base_lr: 1.0e-10
+  base_momentum: 0.8
+  cycle_momentum: true
+  max_lr: 0.001
+  max_momentum: 0.9
+  mode: triangular2
+scheduler_type: CyclicLR
+timestamp: 2025-01-17_03-16-42
+training_hyperparameters:
+  nb_epoch_log: 10
+  num_epochs: 900
+training_parameters:
+  batch_size: 16
+  criterion: MSELoss
+  learning_rate: 0.001
+  num_epochs: 900
+  optimizer: Adam
+  scheduler: CyclicLR

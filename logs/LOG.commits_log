@@ -1,0 +1,482 @@
+commit c9be49f9a8756f59ecec8876f2f8978521ca067a
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Feb 2 13:09:07 2025 +0300
+
+    final mods
+
+commit 18898448f8be62bf23d9a814816aa21637a8d554
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Fri Jan 31 04:42:42 2025 +0300
+
+    adding closed orbit plots
+
+commit 7ad13a95388c9a78cf9e604a6ed0117ea857d810
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Jan 28 02:34:36 2025 +0300
+
+    quad tilt noise benchmark
+
+commit 5f3460bd04f889f093bdc18a030b7d17a6d639e3
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Jan 28 01:02:19 2025 +0300
+
+    add quad_tilt benchmark noise
+
+commit c718120c5c22334804a9d0813f34584f9d601e7d
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 19 22:26:50 2025 +0300
+
+    adding requirements.txt
+
+commit 3e44b22e4ede1af43427bc181d4972021b4bc4fb
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Fri Jan 17 17:55:28 2025 +0300
+
+    adding exp exp_LSTM_2000_mix
+            - including training, plots, and benchmarks
+
+commit 1580cafc6e69f938eedd4d37c3608d911ac048b0
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Fri Jan 17 07:00:13 2025 +0300
+
+    new data with corrected tilt 'sandwich'
+
+commit 9a26e75860716d4d455d8f12d8b336531147b260
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Jan 15 16:53:33 2025 +0300
+
+    replace previous tilt error implementation for dipoles and quads with the new correct one:
+    - Dipole: M • R_tilt(alpha)
+    - Quad: R_quad_tilt(−alpha) • M_quad • ​R_quad_tilt(alpha)
+    
+    Removed the zero-length element when applying quad and dipole tilts
+
+commit 84c0e9aea86d99b24e55dfcebe25de0f5aff7f29
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Jan 15 04:31:59 2025 +0300
+
+    LSTM + FCNN models
+     - generate data
+     - training
+     - validation
+     - benchmarks
+
+commit f25f550cd61376bff85d91a7dd10a776cb3c06f8
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Jan 15 00:10:40 2025 +0300
+
+    preapre cross validation
+
+commit eee04762358f2b418217c300d0632a87879186bf
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Jan 13 04:55:23 2025 +0300
+
+    better modules structure
+
+commit 24c9220e63e5469903661d75814b2f66e5a171a1
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 12 20:08:27 2025 +0300
+
+    gen, training, load, save, eval working
+
+commit b72b210767a003d5ee1d0df99de311bca89925ec
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 12 13:52:53 2025 +0300
+
+    integfration from ipynb cont.
+
+commit d6c871731b98a0e85f3a8eb149e7f42d83f6f2fb
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 12 11:05:25 2025 +0300
+
+    order
+
+commit 22a83865c450245393e94c7dfc305d24d2363383
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 12 08:52:13 2025 +0300
+
+    proper python modules
+
+commit 05014bd40dfbb80b0b7ba679ba0588c779d0da22
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Jan 11 19:00:48 2025 +0300
+
+    plot hist mods
+
+commit b398622a4f2272f09ba7537e69054e21d8adc269
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Thu Jan 9 23:00:06 2025 +0300
+
+    unscaling MAEs in plots.
+
+commit d16ddabee89d80a881ec436f3f5f10a2984897cd
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Thu Jan 9 16:29:04 2025 +0300
+
+    cross-validation (in notebook)
+    accumulated dataset training
+    + plots
+
+commit cfdfd96e44c91439dacd107cfa9f83b653d03d46
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Jan 8 15:56:30 2025 +0300
+
+    adding
+    benchmark figs
+    benchmark_stats_MisAlign-True_Tilt_False.pt
+    benchmark_stats_MisAlign-True_Tilt_True.pt
+
+commit aed41fc50b3f52b8842de77ee8be5f2b5c32247c
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Jan 8 14:10:44 2025 +0300
+
+    fix benchmark plot
+
+commit 2f16a592ed668e456efe8227ebabe5f1170dae34
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Jan 8 10:47:41 2025 +0300
+
+    adding:
+    benchmark_evaluation()
+    evaluate_once()
+    _run_evaluation()
+
+commit 4d6572f15ad82fa9aca332455dfc174e5df4fdbb
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Jan 7 19:30:29 2025 +0300
+
+    adding random noise to BPM readings
+
+commit c429611227daa5acf3b3a813689a747f5ec651ed
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Jan 7 11:11:46 2025 +0300
+
+    better plots
+
+commit 0cfab20da88f3e43fabbfc2fae360ab59f2630b4
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Jan 6 20:09:06 2025 +0300
+
+    fix evaluate method
+
+commit efebc6d7c4a2ee467edba498a7e795a6d4ac6eb1
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Jan 6 14:27:46 2025 +0300
+
+    better data automation.
+    save data checkpoints while running large number of simulations
+    cleaning data and removing data samples containing NaNs
+
+commit 7b9e23c0b2c1e7e422eda52e5c3b89c050f9fb69
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 5 15:00:57 2025 +0300
+
+        quad tilt + dipole tilt augmentation
+        return all error values for all error types
+
+commit 230c0dc56e93cddf76822008f544729748d87f44
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Jan 5 09:55:46 2025 +0300
+
+    mixed tilt and align
+
+commit 77c9cc82518b4cccfab4cec28d45ec5bfdc54470
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Thu Jan 2 09:03:38 2025 +0300
+
+    adding figs and quad tilt lstm checkpoint
+
+commit b08b9825a8830bf43f1b5b07cb1f5799f118787a
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Thu Jan 2 08:59:43 2025 +0300
+
+    quadrupole tilt: data generation + LSTM network training
+
+commit 8db3bd99c0243039ad0f9e43bab4b32e877a3367
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Dec 31 20:10:16 2024 +0300
+
+    enhance plots
+    add phase space plots with heatpmaps for any variable of the 4D state vector
+
+commit e3721aba27e878579e45cfcab77be6e73c4f327f
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Fri Dec 27 04:59:21 2024 +0300
+
+    fix index error exception when applying tilt errors
+
+commit d32db48ab8c9d256fc3ed7d15a24956092f95474
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Dec 23 03:30:00 2024 +0300
+
+    fixing Horizontal/Vertical Slope Kick
+    fixing compute_closed_orbit() to calculate D_ring_4x1 along with M_ring_4x4
+    editing simulation methods (cpu + gpu) to calculate the inhomogeneous term
+
+commit fd870bec2a4b064ef86375af29ec9bab2303260e
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Dec 23 02:11:06 2024 +0300
+
+    fully working version
+    Still want to debug why the quad displacement have no effect
+
+commit f88bafd6e4910cce9e06b0f09632c7e4d2b8bf8f
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Dec 23 01:50:43 2024 +0300
+
+    adding 4D transverse motion; coupled x-y
+    adding Quad title errors
+    adding Dipole title errors
+
+commit aaa36cd68a5e396ce4a852c2f287e2d42824e1e1
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Dec 22 09:51:06 2024 +0300
+
+    adding data: 1500revs_10particles_erroro-fodo-123457
+
+commit 5d973cd224284eed12c2a1a9d0b76d2f7073dd00
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Dec 22 07:31:41 2024 +0300
+
+    working network with multiple error in data:
+    data: s_1000sample_1500revs_10particles_erroro-fodo-2347
+
+commit b114e31fe9220f18c632e3bd26d0acd4075d68e9
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Dec 22 06:41:31 2024 +0300
+
+    update
+        10000 data samples, 10 particles, 1500 revs, all 8 fodo cells errors
+
+commit 2cd0d74884a94e641a8c255e0862c68a497a23c3
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Dec 21 06:41:01 2024 +0300
+
+    Multi-error training & evaluation - generate 500 samples over 1000 revs
+
+commit 44f5b6c0c755e9e1b6a7e2fde17dd9f3811baab5
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Dec 21 00:08:28 2024 +0300
+
+    supporta evaluation on multiple quadrupole errors
+
+commit 797cf2f71645a3c2a7ef8b025463900732c70fbf
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Fri Dec 13 08:31:42 2024 +0300
+
+    calcualting Twiss parameters from the one-turn trasnfer matrix for X and Y
+    init particles with given Twiss parameters for the latttice
+
+commit b06da5a0e2b20df9dbe4a8cf6876d17245f23081
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Dec 11 14:08:39 2024 +0300
+
+    update
+
+commit aa96bd74365cb7e981c56db0e2d1d0e0071a96d9
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Dec 4 22:50:12 2024 +0300
+
+    compute_closed_orbit() analysis
+    x_co=[ 0.25695277 -0.0171579 ], y_co=[0. 0.]
+    
+    [SimulationRunner]:
+    adding generate_init_states()
+    adding generate_init_pos_radius()
+    
+    [SynchrotronSimulator]:
+    adding plot_particle_bpm_readings()
+    adding plot_phase_space_diagram()
+    adding plot_all_bpm_heatmap()
+
+commit 7b6400e4fb1addb5cbeacc278fb4fe62659bfba0
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Dec 1 19:02:09 2024 +0300
+
+    fixing a very bad bug "self.quad_error_elements_len"
+    when adding quad errors, we should add:
+            self.len_per_rev = (self.len_per_cell * self.n_FODO) + self.quad_error_elements_len
+    for element per rev "elem_in_rev" to be consistent and not shifted.
+
+commit 4ba5e12f7a84e87f49ec7f7c72a422c601e2cd58
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Fri Nov 29 10:13:57 2024 +0300
+
+    fix tunes and use thin lense for quads
+
+commit 5c8eb5d37344a8c0306a62882e2c16a5b8ea2001
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Thu Nov 28 08:37:30 2024 +0300
+
+    adding data/target_tensors.pt
+    adding data/train_inputs.pt
+    adding models/quad_error_correction_fnn.pth
+    training + data mods
+
+commit 624e7eb08358f13cf0ca5336f0b52fc3c5995644
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Nov 26 17:15:03 2024 +0300
+
+    adding gen_train_eval.ipynb
+    adding checkpoints/quad_error_correction_lstm.pth
+    renaming train_and_eval_QuadError_net.py -> gen_train_eval_QuadError_net.py
+
+commit 2718f4a866d47971da55f2a8bb45adf810c5adfb
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Nov 26 01:02:23 2024 +0300
+
+    adding Untitled18.ipynb for running data + training + eval
+
+commit 2a975cddf6204cf30536d8df4a7013df97e65328
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Nov 25 21:19:19 2024 +0300
+
+    adding train_and_eval_QuadError_net.py
+
+commit ef75197526fff31f95d1cdec3fc294094427bef1
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Nov 25 08:45:44 2024 +0300
+
+    adding data automoation and notebook
+
+commit ab7f212480d3b8c0b5161f48f2605dec1f28a225
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Nov 25 08:13:07 2024 +0300
+
+    adding automate_dataset_collection.py
+
+commit 334d5ac2687715ac319e00eace27933d78cc2147
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 23 19:48:59 2024 +0300
+
+    adding Dataset, FODOCell, SimulationDataset ...
+
+commit 200f3da1c216fbbc8f47fc29affd425fd354ad3d
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Thu Nov 21 18:39:56 2024 +0300
+
+    adding synchrotron_simulator_gpu.py
+    adding synch_sim_usage-GPU.ipynb
+
+commit 7c0aecaf18a5b9c94ed3d880955addc6669c499a
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Nov 20 10:59:46 2024 +0300
+
+    support quads with
+            1) thin-lens approximation
+            2) finite length L
+
+commit 7b73baa8b5de639bef6766301b42142863a09ffd
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Nov 19 17:36:15 2024 +0300
+
+    correct calcualtions given configuration
+    - setting p, q, rho, p_over_q, B_rho, and B
+    - maintaining Bρ = p​/q
+    - B is the magnetic field strength
+    - ρ is the bending radius,
+    - p is the particle's momentum,
+    - q is the particle's charge.
+
+commit ff320cdaf32bf4d304ad565fa7511bf9a95db4ef
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Nov 17 14:47:37 2024 +0300
+
+    udpate readme with dipole kick and gradianet, f calcualtions
+
+commit 8c980301df0af0f60ef2fc7f018087dd7ac140d8
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 16 11:39:43 2024 +0300
+
+    add more lattice config print within the `describe()` method
+    reset lattice elements and variables before calling `build_lattice()` again.
+
+commit 0f9115bb7cb3e5feb4810d2ff2211eb9f5e20cd9
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 16 10:25:19 2024 +0300
+
+    adding dipoles efficiently
+    adding the option for calculating 'k' from 'G', or from 'f'
+
+commit 5d1aa67d20bb2d7e03ff007a3f67882341a4c069
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Nov 13 10:10:32 2024 +0300
+
+    Enhance adjusting parameters
+    Adding 'mag_field_range', 'dipole_length_range', 'horizontal_tune_range', and 'vertical_tune_range' to the 'common_parameters' dictionary
+    properly call `self.quad_transfer_matrix`
+
+commit d12e48a5bf2d98ff5cce00bdb409b57d47916cd7
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Nov 12 13:58:17 2024 +0300
+
+    [Meeting with Dr. Selcuk]
+    [Tue 2024-11-12]
+    - notebook simulations.
+
+commit 94606a24f0fdfc32e6c78a234c4fb5af0f7c7b52
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Tue Nov 12 08:12:05 2024 +0300
+
+    adding SynchrotronSimulator.md synch_sim_usage.ipynb synchrotron_simulator.py
+
+commit c8b56ec28ce7c797ec1a359baf802ca9801c0326
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Mon Nov 11 16:27:46 2024 +0300
+
+    adding Untitled16.ipynb containing the final simulator changes
+
+commit 59205ac6fa9f371b0a7180a119df88cfdd7726bc
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Nov 10 11:06:35 2024 +0300
+
+    pushed for saving a simualtion run
+
+commit 889c4bec2f0e2ca2ab269e16ecb7e053efb20267
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sun Nov 10 11:00:09 2024 +0300
+
+    Untitled15.ipynb is the final simulation code
+    corrected applying zero length dippole after quads with defocusing or focusing
+
+commit b652d070dcaaa87e3f407965f683d72ec00d8e4b
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 9 15:36:47 2024 +0300
+
+    updated simuation with advanced visualization
+    incorporating the correct dipole magnetic field error to quadrupoles
+    simulating BPM
+    plotting historgrams
+
+commit 31973334f138290850b46fa4755cb713407eadd6
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 9 02:04:39 2024 +0300
+
+    adding transverse_correction_net_v2.py
+
+commit 4a187ae0b321572e5e5f26483355aa9d27e18d55
+Merge: 4db5bce cb11296
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 9 02:04:28 2024 +0300
+
+    Merge branch 'main' of https://github.com/aRibra/lattice_error_net
+
+commit 4db5bce273943d3a124c6bcb56a77f5fd64ec4f4
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Sat Nov 9 02:02:22 2024 +0300
+
+    add all SynchrotronSimulator versions
+
+commit cb1129624aaf60b5609b010d431b3b26aed6ced5
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Nov 6 13:23:18 2024 +0300
+
+    Create README.md
+
+commit 116dee8010c329fe0e5fbf2e7d9f1d57d48e1990
+Author: Ibrahim Abedrabbo <ibrahim@dailyrobotics.com>
+Date:   Wed Nov 6 08:32:43 2024 +0300
+
+    adding files
+            - notebooks
+            - transverse_correction_net.py
