@@ -982,6 +982,7 @@ class SynchrotronSimulator:
 
                             # compute the small angle
                             theta_kick = k_nominal * delta * L_q
+                            theta_kick = -theta_kick # deflect particles in the opposite direction
                             # sign => if plane='vertical', means a rotation in y-plane
 
                             # Build a 4x4 that adds a small angle to x' or y'
