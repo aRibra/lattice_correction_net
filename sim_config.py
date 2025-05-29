@@ -143,6 +143,7 @@ common_parameters = {
     'y0_mean_std': (0.0, 0.05),      # meters
     'yp0_mean_std': (0.0, 0.00),  # radians
     'particles_sampling_method': 'from_twiss_params', # from_twiss_params | circle_with_radius | normal
+    'correct_injection_offset': False,
     'sampling_circle_radius': 0.01, #meters,
     # Acceptable ranges config params
     'mag_field_range': [0.1, 2.0],           # Tesla
