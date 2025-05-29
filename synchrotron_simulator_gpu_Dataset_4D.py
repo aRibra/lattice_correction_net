@@ -526,7 +526,7 @@ class SynchrotronSimulator:
         # self.Dy_lattice_cell = []
         # self.theta_lattice_cell = []
         
-        # We'll store the final ring as lists of dicts with 'M_4x4', 's_elem', etc.
+        # storing the final ring as lists of dicts with 'M_4x4', 's_elem', etc.
         self.M_lattice_4x4 = [] # list of 4x4 for each element
         self.D_lattice_4x1   = [] # list of 4×1 for each element
         self.lattice_positions = []
@@ -1538,6 +1538,7 @@ class SynchrotronSimulator:
             self.bpm_readings['y']  = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
             self.bpm_readings['xp'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
             self.bpm_readings['yp'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
+            self.bpm_readings['s'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
 
         x_co, y_co = self.compute_closed_orbit()
         print(f"Closed orbit computation: x_co={x_co}, y_co={y_co}")
@@ -1629,7 +1630,6 @@ class SynchrotronSimulator:
                     self.bpm_readings['yp'][p_idx, turn, cell_index] = X_4d[3]
 
             init_np[p_idx] = X_4d
-
 
     def _simulate_gpu(self, initial_states, x_co, y_co):
         """GPU-accelerated simulation using Numba on CUDA in 4D."""
@@ -3032,7 +3032,440 @@ class SynchrotronSimulator:
         running_avg = np.convolve(data, window, mode='valid')
         return running_avg
 
+    def plot_comparison( self, other_simulator, cell_idx=0, start_idx=0, end_idx=None, viz_start_idx=0, viz_end_idx=None,
+                        save_label='0', fontsize=14, window_size=100, plot_all=True, extra_title=None
+        ):
+        """
+        Plot comparison of CoM movements before and after applying errors for specific BPM(s).
 
+        Parameters:
+            other_simulator (SynchrotronSimulator): The simulator with which to compare.
+            cell_idx (int): Index of the BPM (FODO cell) to plot. Ignored if plot_all=True.
+            start_idx (int): Starting revolution index (inclusive).
+            end_idx (int): Ending revolution index (exclusive). If None, plots until the last turn.
+            viz_start_idx (int): Starting index for visualization within the data.
+            viz_end_idx (int): Ending index for visualization within the data.
+            save_label (str): Label to append to saved figure filenames.
+            fontsize (int): Font size for plot labels and titles.
+            window_size (int): Window size for running average.
+            plot_all (bool): If True, plots all BPMs in subplots; otherwise, plots only the specified BPM.
+            extra_title (str, optional): Additional title text to include in the plots.
+        """
+        # Determine the total number of turns available in both simulations
+        total_turns = min(self.n_turns, other_simulator.n_turns)
+        end_idx = end_idx if end_idx is not None else total_turns
+        viz_end_idx = viz_end_idx if viz_end_idx is not None else total_turns
+
+        # Determine the number of BPMs (cells)
+        num_cells = self.bpm_readings['x'].shape[2]
+
+        # Function to process data for a single BPM
+        def process_bpm(cell):
+            # Extract BPM readings for the specified cell and turn range
+            self_x = self.bpm_readings['x'][:, start_idx:end_idx, cell].mean(axis=0)
+            self_y = self.bpm_readings['y'][:, start_idx:end_idx, cell].mean(axis=0)
+            other_x = other_simulator.bpm_readings['x'][:, start_idx:end_idx, cell].mean(axis=0)
+            other_y = other_simulator.bpm_readings['y'][:, start_idx:end_idx, cell].mean(axis=0)
+
+            # Compute overall average CoM positions for both simulations
+            com_x_no_error = np.mean(self_x) if len(self_x) > 0 else 0.0
+            com_y_no_error = np.mean(self_y) if len(self_y) > 0 else 0.0
+            com_x_with_error = np.mean(other_x) if len(other_x) > 0 else 0.0
+            com_y_with_error = np.mean(other_y) if len(other_y) > 0 else 0.0
+
+            # Compute differences in CoM positions
+            delta_x = com_x_with_error - com_x_no_error
+            delta_y = com_y_with_error - com_y_no_error
+
+            print(f"plot_comparison() - BPM {cell}/")
+            print(f"\t CoM No error: X = {com_x_no_error}, Y = {com_y_no_error}")
+            print(f"\t CoM With Error: X = {com_x_with_error}, Y = {com_y_with_error}")
+            print('----')
+            print(f"\t ΔX = {delta_x:.7f} m, {delta_x * 1e6:.2f} micron")
+            print(f"\t ΔY = {delta_y:.7f} m, {delta_y * 1e6:.2f} micron")
+            print(f"\t beam epsilon X = {self.epsilon_horizontal:.7f} m, {self.epsilon_horizontal * 1e6:.2f} micron")
+            print(f"\t beam epsilon Y = {self.epsilon_vertical:.7f} m, {self.epsilon_vertical * 1e6:.2f} micron")
+            print('----')
+
+            # Prepare revolution numbers for plotting
+            rev_numbers = np.arange(start_idx, end_idx)
+            if len(rev_numbers) == 0:
+                print(f"No revolutions recorded for BPM {cell}. Skipping.")
+                return None
+
+            # Ensure arrays have the same length
+            min_length = min(len(rev_numbers), len(self_x), len(other_x),
+                            len(self_y), len(other_y))
+            if min_length == 0:
+                print(f"Insufficient data for BPM {cell}. Skipping.")
+                return None
+
+            # Slice arrays to the minimum common length
+            rev_numbers = rev_numbers[:min_length]
+            self_x = self_x[:min_length]
+            self_y = self_y[:min_length]
+            other_x = other_x[:min_length]
+            other_y = other_y[:min_length]
+
+            # Calculate cumulative averages for smoother trends
+            self_x_cumu_avg = self.running_average_numpy(self_x, window_size)
+            other_x_cumu_avg = self.running_average_numpy(other_x, window_size)
+            self_y_cumu_avg = self.running_average_numpy(self_y, window_size)
+            other_y_cumu_avg = self.running_average_numpy(other_y, window_size)
+
+            # Compute average CoM positions of cumulative_average for both simulations
+            com_x_no_error_cumu = np.mean(self_x) if len(self_x) > 0 else 0.0
+            com_y_no_error_cumu = np.mean(self_y) if len(self_y) > 0 else 0.0
+            com_x_with_error_cumu = np.mean(other_x) if len(other_x) > 0 else 0.0
+            com_y_with_error_cumu = np.mean(other_y) if len(other_y) > 0 else 0.0
+
+            # Slice for visualization
+            viz_start = max(viz_start_idx, 0)
+            self_x_plot = self_x_cumu_avg[viz_start:]
+            other_x_plot = other_x_cumu_avg[viz_start:]
+            self_y_plot = self_y_cumu_avg[viz_start:]
+            other_y_plot = other_y_cumu_avg[viz_start:]
+            rev_plot = rev_numbers[viz_start:]
+
+            if window_size > 1:
+                rev_plot = np.linspace(viz_start, viz_start + len(rev_plot), len(self_x_plot))
+
+            return {
+                'rev': rev_plot,
+                'self_x': self_x_plot,
+                'other_x': other_x_plot,
+                'self_y': self_y_plot,
+                'other_y': other_y_plot,
+                'cell': cell,
+                'delta_x': delta_x,
+                'delta_y': delta_y,
+                'com_x_no_error': com_x_no_error,
+                'com_y_no_error': com_y_no_error,
+                'com_x_with_error': com_x_with_error,
+                'com_y_with_error': com_y_with_error,
+            }
+
+        if not plot_all:
+            # Existing behavior: plot for a single BPM
+            data = process_bpm(cell_idx)
+            if data is None:
+                print("No data to plot for the specified BPM.")
+                return
+
+            # Plot horizontal positions comparison
+            plt.figure(figsize=(10, 6))
+            plt.plot(data['rev'], data['self_x'], label='No Error', color='blue')
+            plt.plot(data['rev'], data['other_x'], label='With Quadrupole Error', color='red')
+            plt.xlabel('Revolution Number', fontsize=fontsize)
+            plt.ylabel('Horizontal Position x (State)', fontsize=fontsize)
+            title_str = f'Comparison of Horizontal Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}'
+            if extra_title:
+                title_str += f'\n{extra_title}'
+            plt.title(title_str, fontsize=fontsize)
+            plt.tick_params(axis='both', labelsize=fontsize)
+            plt.minorticks_on()
+            plt.legend(fontsize=fontsize)
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(f"{self.figs_save_dir}/plot_comparison_X_{save_label}.eps", bbox_inches='tight', format='eps')
+            plt.show()
+
+            # Plot vertical positions comparison
+            plt.figure(figsize=(10, 6))
+            plt.plot(data['rev'], data['self_y'], label='No Error', color='blue')
+            plt.plot(data['rev'], data['other_y'], label='With Quadrupole Error', color='red')
+            plt.xlabel('Revolution Number', fontsize=fontsize)
+            plt.ylabel('Vertical Position y (State)', fontsize=fontsize)
+            title_str = f'Comparison of Vertical Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}'
+            if extra_title:
+                title_str += f'\n{extra_title}'
+            plt.title(title_str, fontsize=fontsize)
+            plt.tick_params(axis='both', labelsize=fontsize)
+            plt.minorticks_on()
+            plt.legend(fontsize=fontsize)
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(f"{self.figs_save_dir}/plot_comparison_Y_{save_label}.eps", bbox_inches='tight', format='eps')
+            plt.show()
+
+        else:
+            # New behavior: plot all BPMs in subplots with an additional CoM comparison subplot
+            # Prepare data for all BPMs
+            all_data = []
+            for cell in range(num_cells):
+                bpm_data = process_bpm(cell)
+                if bpm_data is not None:
+                    all_data.append(bpm_data)
+
+            if not all_data:
+                print("No data available to plot for any BPM.")
+                return
+
+            # Collect overall CoM data
+            com_x_no_error_all = [data['com_x_no_error'] for data in all_data]
+            com_x_with_error_all = [data['com_x_with_error'] for data in all_data]
+            com_y_no_error_all = [data['com_y_no_error'] for data in all_data]
+            com_y_with_error_all = [data['com_y_with_error'] for data in all_data]
+
+            com_x_no_error_all = np.array(com_x_no_error_all)
+            com_x_with_error_all = np.array(com_x_with_error_all)
+            com_y_no_error_all = np.array(com_y_no_error_all)
+            com_y_with_error_all = np.array(com_y_with_error_all)
+
+            # Determine subplot grid
+            bpm_count = len(all_data)
+            extra_subplot = 1  # For overall CoM comparison
+            total_subplots = bpm_count + extra_subplot
+            n_cols = 3
+            n_rows = int(np.ceil(total_subplots / n_cols))
+
+            # Plot horizontal positions comparison for all BPMs
+            fig_x, axes_x = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharex=False, sharey=False)
+            axes_x = axes_x.flatten()  # Flatten in case of multiple rows
+
+            for idx, data in enumerate(all_data):
+                ax = axes_x[idx]
+                ax.plot(data['rev'], data['self_x'], label='No Error', color='blue')
+                ax.plot(data['rev'], data['other_x'], label='With Error', color='red')
+                ax.set_xlabel('Rev', fontsize=fontsize)
+                ax.set_ylabel('x (State)', fontsize=fontsize)
+                ax.set_title(f'BPM {data["cell"]}\n (ΔX {data["delta_x"] * 1e6:.3f} μm)', fontsize=fontsize)
+                ax.tick_params(axis='both', labelsize=fontsize)
+                ax.minorticks_on()
+                ax.legend(fontsize=fontsize-2)
+                ax.grid(True)
+
+            # Add the extra subplot for overall CoM comparison
+            overall_idx = bpm_count  # Position of the extra subplot
+            ax_overall_x = axes_x[overall_idx]
+            # Plotting overall CoM comparison using bar charts
+            indices = np.arange(num_cells)
+            width = 0.35  # Width of the bars
+
+            ax_overall_x.plot(com_x_no_error_all, '-o', label='No Error', color='blue')
+            ax_overall_x.plot(com_x_with_error_all, '-.x', label='With Error', color='red')
+            ax_overall_x.plot(com_x_with_error_all - com_x_no_error_all, label='Diff', color='green')
+            ax_overall_x.set_xlabel('BPM Index', fontsize=fontsize)
+            ax_overall_x.set_ylabel('Average Horizontal CoM (μm)', fontsize=fontsize)
+            ax_overall_x.set_title('Overall Horizontal CoM Comparison', fontsize=fontsize)
+            ax_overall_x.set_xticks(indices)
+            ax_overall_x.set_xticklabels([str(data['cell']) for data in all_data], rotation=45, fontsize=fontsize-2)
+            ax_overall_x.tick_params(axis='both', labelsize=fontsize)
+            ax_overall_x.legend(fontsize=fontsize-2)
+            ax_overall_x.grid(True, axis='y')
+
+            # Hide any unused subplots
+            for idx in range(total_subplots, n_rows * n_cols):
+                fig_x.delaxes(axes_x[idx])
+            
+            title_str = f'Comparison of Horizontal Positions for All BPMs'
+            if extra_title:
+                title_str += f'\n{extra_title}'
+            fig_x.suptitle(title_str, fontsize=fontsize+2)
+            fig_x.tight_layout(rect=[0, 0.03, 1, 0.95])
+            fig_x.savefig(f"{self.figs_save_dir}/plot_comparison_ALL_X_{save_label}.eps", bbox_inches='tight', format='eps')
+            plt.show()
+
+            # Plot vertical positions comparison for all BPMs
+            fig_y, axes_y = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharex=False, sharey=False)
+            axes_y = axes_y.flatten()
+
+            for idx, data in enumerate(all_data):
+                ax = axes_y[idx]
+                ax.plot(data['rev'], data['self_y'], label='No Error', color='blue')
+                ax.plot(data['rev'], data['other_y'], label='With Error', color='red')
+                ax.set_xlabel('Rev', fontsize=fontsize)
+                ax.set_ylabel('y (State)', fontsize=fontsize)
+                ax.set_title(f'BPM {data["cell"]}\n (ΔY {data["delta_y"] * 1e6:.3f} μm)', fontsize=fontsize)
+                ax.tick_params(axis='both', labelsize=fontsize)
+                ax.minorticks_on()
+                ax.legend(fontsize=fontsize-2)
+                ax.grid(True)
+
+            # Add the extra subplot for overall CoM comparison
+            overall_idx = bpm_count  # Position of the extra subplot
+            ax_overall_y = axes_y[overall_idx]
+            # Plotting overall CoM comparison using bar charts
+            indices = np.arange(num_cells)
+            width = 0.35  # Width of the bars
+
+            ax_overall_y.plot(com_y_no_error_all, '-o', label='No Error', color='blue')
+            ax_overall_y.plot(com_y_with_error_all, '-.x', label='With Error', color='red')
+            ax_overall_y.plot(com_y_with_error_all - com_y_no_error_all, label='Diff', color='green')
+            ax_overall_y.set_xlabel('BPM Index', fontsize=fontsize)
+            ax_overall_y.set_ylabel('Average Vertical CoM (μm)', fontsize=fontsize)
+            ax_overall_y.set_title('Overall Vertical CoM Comparison', fontsize=fontsize)
+            ax_overall_y.set_xticks(indices)
+            ax_overall_y.set_xticklabels([str(data['cell']) for data in all_data], rotation=45, fontsize=fontsize-2)
+            ax_overall_y.tick_params(axis='both', labelsize=fontsize)
+            ax_overall_y.legend(fontsize=fontsize-2)
+            ax_overall_y.grid(True, axis='y')
+
+            # Hide any unused subplots
+            for idx in range(total_subplots, n_rows * n_cols):
+                fig_y.delaxes(axes_y[idx])
+
+            title_str = f'Comparison of Vertical Positions for All BPMs'
+            if extra_title:
+                title_str += f'\n{extra_title}'
+            fig_y.suptitle(title_str, fontsize=fontsize+2)
+            fig_y.tight_layout(rect=[0, 0.03, 1, 0.95])
+            fig_y.savefig(f"{self.figs_save_dir}/plot_comparison_ALL_Y_{save_label}.eps", bbox_inches='tight', format='eps')
+            plt.show()
+
+    def plot_transverse_vs_longitudinal(self, other_simulator=None, particle_idx=0, save_path_prefix=None):
+        """
+        Create two separate plots: y vs. s and x vs. s for a given particle using BPM readings.
+        If other_simulator is provided, compare x vs. s and y vs. s for both simulators on the same plots.
+        Mark BPM positions with vertical dashed lines and label them as bpm_0, bpm_1, etc.
+        
+        Parameters:
+            other_simulator (SynchrotronSimulator): Another simulator instance to compare (default: None).
+            particle_idx (int): Index of the particle to plot (default: 0).
+            save_path_prefix (str): Prefix for saving plots (e.g., 'plot' saves 'plot_y_vs_s.png' and 'plot_x_vs_s.png'). 
+                                If None, displays plots (default: None).
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # Validate self simulator
+        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
+            raise ValueError("BPM readings not available for self simulator. Run simulation first.")
+        
+        # Extract s-positions for self simulator
+        s_bpm_self = []
+        elements_per_cell = {}
+        for elem in self.lattice_elements_positions:
+            cell_idx = elem['cell_index']
+            if cell_idx not in elements_per_cell:
+                elements_per_cell[cell_idx] = []
+            elements_per_cell[cell_idx].append(elem)
+        
+        for cell_idx in sorted(elements_per_cell.keys()):
+            last_elem = elements_per_cell[cell_idx][-1]
+            s_bpm_self.append(last_elem['end_s'])
+        s_bpm_self = np.array(s_bpm_self)
+        
+        # Adjust to start at s=0
+        s_offset_self = s_bpm_self[0]
+        s_bpm_self_adjusted = s_bpm_self - s_offset_self
+        s_values_self = np.tile(s_bpm_self_adjusted, self.n_turns)
+        
+        # Get x and y values for self simulator
+        x_values_self = self.bpm_readings['x'][particle_idx].flatten()
+        y_values_self = self.bpm_readings['y'][particle_idx].flatten()
+        
+        # Initialize data for other simulator
+        s_values_other = None
+        x_values_other = None
+        y_values_other = None
+        s_bpm_other_adjusted = None
+        
+        if other_simulator is not None:
+            # Validate other simulator
+            if other_simulator.bpm_readings['x'] is None or other_simulator.bpm_readings['y'] is None:
+                raise ValueError("BPM readings not available for other simulator. Run simulation first.")
+            if self.n_turns != other_simulator.n_turns or self.n_FODO != other_simulator.n_FODO:
+                raise ValueError("Simulators must have the same number of turns and FODO cells for comparison.")
+            
+            # Extract s-positions for other simulator
+            s_bpm_other = []
+            elements_per_cell = {}
+            for elem in other_simulator.lattice_elements_positions:
+                cell_idx = elem['cell_index']
+                if cell_idx not in elements_per_cell:
+                    elements_per_cell[cell_idx] = []
+                elements_per_cell[cell_idx].append(elem)
+            
+            for cell_idx in sorted(elements_per_cell.keys()):
+                last_elem = elements_per_cell[cell_idx][-1]
+                s_bpm_other.append(last_elem['end_s'])
+            s_bpm_other = np.array(s_bpm_other)
+            
+            # Adjust to start at s=0
+            s_offset_other = s_bpm_other[0]
+            s_bpm_other_adjusted = s_bpm_other - s_offset_other
+            s_values_other = np.tile(s_bpm_other_adjusted, other_simulator.n_turns)
+            
+            # Get x and y values for other simulator
+            x_values_other = other_simulator.bpm_readings['x'][particle_idx].flatten()
+            y_values_other = other_simulator.bpm_readings['y'][particle_idx].flatten()
+        
+        # Plot 1: y vs. s
+        fig_y, ax_y = plt.subplots(figsize=(12, 6))
+        ax_y.plot(s_values_self, y_values_self, 'b-', label=f'Self: y (Particle {particle_idx})')
+        
+        if other_simulator is not None:
+            ax_y.plot(s_values_other, y_values_other, 'r--', label=f'Other: y (Particle {particle_idx})')
+        
+        # Mark revolution boundaries
+        for turn in range(self.n_turns):
+            boundary_idx = turn * self.n_FODO
+            if boundary_idx < len(s_values_self):
+                ax_y.axvline(x=s_values_self[boundary_idx], color='k', linestyle=':', alpha=0.5, 
+                            label='Revolution Boundary' if turn == 0 else None)
+        
+        # Mark BPM positions with labels
+        for turn in range(self.n_turns):
+            for i, s_bpm in enumerate(s_bpm_self_adjusted):
+                s_pos = s_bpm + turn * s_bpm_self_adjusted[-1]
+                ax_y.axvline(x=s_pos, color='gray', linestyle='--', alpha=0.3, 
+                            label='BPM Position' if turn == 0 and i == 0 else None)
+                # Add vertical text label
+                ax_y.text(s_pos, 1.05, f'bpm_{i}', rotation=90, fontsize=8, 
+                        verticalalignment='bottom', horizontalalignment='center', 
+                        transform=ax_y.get_xaxis_transform())
+        
+        ax_y.set_xlabel('Longitudinal Position s (meters)')
+        ax_y.set_ylabel('Vertical Position y (meters)')
+        ax_y.set_title(f'Vertical Position y vs. Longitudinal Position s (Particle {particle_idx})')
+        ax_y.grid(True)
+        ax_y.legend()
+        plt.tight_layout()
+        
+        if save_path_prefix:
+            plt.savefig(f'{save_path_prefix}_y_vs_s.png')
+            plt.close(fig_y)
+        else:
+            plt.show()
+        
+        # Plot 2: x vs. s
+        fig_x, ax_x = plt.subplots(figsize=(12, 6))
+        ax_x.plot(s_values_self, x_values_self, 'g-', label=f'Self: x (Particle {particle_idx})')
+        
+        if other_simulator is not None:
+            ax_x.plot(s_values_other, x_values_other, 'r--', label=f'Other: x (Particle {particle_idx})')
+        
+        # Mark revolution boundaries
+        for turn in range(self.n_turns):
+            boundary_idx = turn * self.n_FODO
+            if boundary_idx < len(s_values_self):
+                ax_x.axvline(x=s_pos, color='k', linestyle=':', alpha=0.5, 
+                            label='Revolution Boundary' if turn == 0 else None)
+        
+        # Mark BPM positions with labels
+        for turn in range(self.n_turns):
+            for i, s_bpm in enumerate(s_bpm_self_adjusted):
+                s_pos = s_bpm + turn * s_bpm_self_adjusted[-1]
+                ax_x.axvline(x=s_pos, color='gray', linestyle='--', alpha=0.3, 
+                            label='BPM Position' if turn == 0 and i == 0 else None)
+                # Add vertical text label
+                ax_x.text(s_pos, 1.05, f'bpm_{i}', rotation=90, fontsize=8, 
+                        verticalalignment='bottom', horizontalalignment='center', 
+                        transform=ax_x.get_xaxis_transform())
+        
+        ax_x.set_xlabel('Longitudinal Position s (meters)')
+        ax_x.set_ylabel('Horizontal Position x (meters)')
+        ax_x.set_title(f'Horizontal Position x vs. Longitudinal Position s (Particle {particle_idx})')
+        ax_x.grid(True)
+        ax_x.legend()
+        plt.tight_layout()
+        
+        if save_path_prefix:
+            plt.savefig(f'{save_path_prefix}_x_vs_s.png')
+            plt.close(fig_x)
+        else:
+            plt.show()
 class SimulationRunner:
     """
     Class to run multiple synchrotron simulations based on provided configurations.
@@ -3175,6 +3608,7 @@ class SimulationRunner:
                     
                     elif merged_config['particles_sampling_method'] == 'from_twiss_params':
                         alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = simulator_no_error.compute_twiss_parameters()
+                        print(f'Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}')
                         initial_states = simulator_no_error.generate_initial_states_from_twiss(alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, merged_config['num_particles'])                        
                         self.initial_states = initial_states
                 else:
