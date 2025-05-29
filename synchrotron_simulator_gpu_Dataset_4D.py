@@ -443,7 +443,7 @@ class SynchrotronSimulator:
                  num_particles=1, n_FODO=None, L_dipole=None, n_Dipoles=None,
                  G=None, f=None, use_thin_lens=False, mag_field_range=(0.5, 2.0), dipole_length_range=(0.5, 5.0),
                  horizontal_tune_range=(0.2, 0.8), vertical_tune_range=(0.2, 0.8),
-                 use_gpu=False, verbose=True, figs_save_dir='figs'):
+                 use_gpu=False, verbose=True, figs_save_dir='figs', correct_injection_offset=False):
         """
         Initialize the Synchrotron Simulator.
 
@@ -474,6 +474,7 @@ class SynchrotronSimulator:
         self.total_dipole_bending_angle = total_dipole_bending_angle  # In radians
         self.theta_dipole = None  # To be calculated
         self.use_thin_lens = use_thin_lens
+        self.correct_injection_offset = correct_injection_offset
 
         # Particle parameters
         # Conversion factor from GeV/c to kg·m/s
@@ -1346,6 +1347,7 @@ class SynchrotronSimulator:
                                 vertical_tune_range=vertical_tune_range,
                                 verbose=verbose,  # Suppress output during lattice search,
                                 figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
+                                correct_injection_offset=merged_config.get('correct_injection_offset', False)
 
                             )
 
@@ -1597,11 +1599,12 @@ class SynchrotronSimulator:
 
         init_np = np.array(initial_states, dtype=np.float64)
         # add closed orbit
-        for i in range(nb_particles):
-            init_np[i,0] += x_co[0]
-            init_np[i,1] += x_co[1]
-            init_np[i,2] += y_co[0]
-            init_np[i,3] += y_co[1]
+        if self.correct_injection_offset:
+            for i in range(nb_particles):
+                init_np[i,0] += x_co[0]
+                init_np[i,1] += x_co[1]
+                init_np[i,2] += y_co[0]
+                init_np[i,3] += y_co[1]
 
         for p_idx in range(nb_particles):
             if self.verbose and (p_idx * self.n_turns) % ((nb_particles * self.n_turns) * debug_sim_rate) == 0 and debug_prcnt:
@@ -1639,11 +1642,12 @@ class SynchrotronSimulator:
 
         # Prepare initial states + closed orbit
         init_np = np.array(initial_states, dtype=np.float64)
-        for i in range(nb_particles):
-            init_np[i,0] += x_co[0]
-            init_np[i,1] += x_co[1]
-            init_np[i,2] += y_co[0]
-            init_np[i,3] += y_co[1]
+        if self.correct_injection_offset:
+            for i in range(nb_particles):
+                init_np[i,0] += x_co[0]
+                init_np[i,1] += x_co[1]
+                init_np[i,2] += y_co[0]
+                init_np[i,3] += y_co[1]
 
         d_states = cuda.to_device(init_np)
 
@@ -3325,8 +3329,6 @@ class SynchrotronSimulator:
             save_path_prefix (str): Prefix for saving plots (e.g., 'plot' saves 'plot_y_vs_s.png' and 'plot_x_vs_s.png'). 
                                 If None, displays plots (default: None).
         """
-        import matplotlib.pyplot as plt
-        import numpy as np
         
         # Validate self simulator
         if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
@@ -3558,6 +3560,7 @@ class SimulationRunner:
                     use_gpu=merged_config.get('use_gpu', False),
                     verbose=merged_config.get('verbose', False),
                     figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
+                    correct_injection_offset=merged_config.get('correct_injection_offset', False)
                 )
                 
                 if verbose:
@@ -3677,6 +3680,7 @@ class SimulationRunner:
                         use_gpu=merged_config.get('use_gpu', False),
                         verbose=merged_config.get('verbose', False),
                         figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
+                        correct_injection_offset=merged_config.get('correct_injection_offset', False)
                     )
 
                     if quad_errors:
