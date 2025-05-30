@@ -3317,7 +3317,7 @@ class SynchrotronSimulator:
             fig_y.savefig(f"{self.figs_save_dir}/plot_comparison_ALL_Y_{save_label}.eps", bbox_inches='tight', format='eps')
             plt.show()
 
-    def plot_transverse_vs_longitudinal(self, other_simulator=None, particle_idx=0, save_path_prefix=None):
+    def plot_transverse_vs_longitudinal(self, other_simulator=None, particle_idx=0, start_rev=0, end_rev=-1, save_path_prefix=None):
         """
         Create two separate plots: y vs. s and x vs. s for a given particle using BPM readings.
         If other_simulator is provided, compare x vs. s and y vs. s for both simulators on the same plots.
@@ -3348,14 +3348,16 @@ class SynchrotronSimulator:
             s_bpm_self.append(last_elem['end_s'])
         s_bpm_self = np.array(s_bpm_self)
         
+        n_turns = end_rev - start_rev
+        
         # Adjust to start at s=0
         s_offset_self = s_bpm_self[0]
         s_bpm_self_adjusted = s_bpm_self - s_offset_self
-        s_values_self = np.tile(s_bpm_self_adjusted, self.n_turns)
+        s_values_self = np.tile(s_bpm_self_adjusted, n_turns)
         
         # Get x and y values for self simulator
-        x_values_self = self.bpm_readings['x'][particle_idx].flatten()
-        y_values_self = self.bpm_readings['y'][particle_idx].flatten()
+        x_values_self = self.bpm_readings['x'][particle_idx][start_rev:end_rev].flatten()
+        y_values_self = self.bpm_readings['y'][particle_idx][start_rev:end_rev].flatten()
         
         # Initialize data for other simulator
         s_values_other = None
@@ -3387,11 +3389,11 @@ class SynchrotronSimulator:
             # Adjust to start at s=0
             s_offset_other = s_bpm_other[0]
             s_bpm_other_adjusted = s_bpm_other - s_offset_other
-            s_values_other = np.tile(s_bpm_other_adjusted, other_simulator.n_turns)
+            s_values_other = np.tile(s_bpm_other_adjusted, n_turns)
             
             # Get x and y values for other simulator
-            x_values_other = other_simulator.bpm_readings['x'][particle_idx].flatten()
-            y_values_other = other_simulator.bpm_readings['y'][particle_idx].flatten()
+            x_values_other = other_simulator.bpm_readings['x'][particle_idx][start_rev:end_rev].flatten()
+            y_values_other = other_simulator.bpm_readings['y'][particle_idx][start_rev:end_rev].flatten()
         
         # Plot 1: y vs. s
         fig_y, ax_y = plt.subplots(figsize=(12, 6))
@@ -3401,14 +3403,14 @@ class SynchrotronSimulator:
             ax_y.plot(s_values_other, y_values_other, 'r--', label=f'Other: y (Particle {particle_idx})')
         
         # Mark revolution boundaries
-        for turn in range(self.n_turns):
+        for turn in range(n_turns):
             boundary_idx = turn * self.n_FODO
             if boundary_idx < len(s_values_self):
                 ax_y.axvline(x=s_values_self[boundary_idx], color='k', linestyle=':', alpha=0.5, 
                             label='Revolution Boundary' if turn == 0 else None)
         
         # Mark BPM positions with labels
-        for turn in range(self.n_turns):
+        for turn in range(n_turns):
             for i, s_bpm in enumerate(s_bpm_self_adjusted):
                 s_pos = s_bpm + turn * s_bpm_self_adjusted[-1]
                 ax_y.axvline(x=s_pos, color='gray', linestyle='--', alpha=0.3, 
@@ -3420,7 +3422,7 @@ class SynchrotronSimulator:
         
         ax_y.set_xlabel('Longitudinal Position s (meters)')
         ax_y.set_ylabel('Vertical Position y (meters)')
-        ax_y.set_title(f'Vertical Position y vs. Longitudinal Position s (Particle {particle_idx})')
+        ax_y.set_title(f'Vertical Position y vs. Longitudinal Position s (Particle {particle_idx})\nRevs[{start_rev} - {end_rev}]')
         ax_y.grid(True)
         ax_y.legend()
         plt.tight_layout()
@@ -3439,14 +3441,14 @@ class SynchrotronSimulator:
             ax_x.plot(s_values_other, x_values_other, 'r--', label=f'Other: x (Particle {particle_idx})')
         
         # Mark revolution boundaries
-        for turn in range(self.n_turns):
+        for turn in range(n_turns):
             boundary_idx = turn * self.n_FODO
             if boundary_idx < len(s_values_self):
                 ax_x.axvline(x=s_pos, color='k', linestyle=':', alpha=0.5, 
                             label='Revolution Boundary' if turn == 0 else None)
         
         # Mark BPM positions with labels
-        for turn in range(self.n_turns):
+        for turn in range(n_turns):
             for i, s_bpm in enumerate(s_bpm_self_adjusted):
                 s_pos = s_bpm + turn * s_bpm_self_adjusted[-1]
                 ax_x.axvline(x=s_pos, color='gray', linestyle='--', alpha=0.3, 
