@@ -169,7 +169,98 @@ def inference_on_validation_data(model, val_loader, dataset_scalers, merged_conf
         plt.show()
 
 
-def _run_evaluation(model, base_configurations, common_parameters, dataset_scalers, noise_type=None, noise_level=0.0, plot=False, verbose=True):
+def evaluate_with_existing_data(model, val_loader, dataset_scalers, merged_config, 
+                               noise_type='bpm_shift', noise_level=0.0, x_shift=True, y_shift=True, 
+                               verbose=False):
+    """
+    Evaluates the model on existing validation data with systematic BPM shifts applied in batches.
+
+    Parameters:
+    - model: The trained model.
+    - val_loader: DataLoader for the validation dataset.
+    - dataset_scalers: Dictionary containing 'input_scaler' and 'target_scaler'.
+    - merged_config: Merged configuration dictionary.
+    - noise_type: Type of noise to apply ('bpm_shift').
+    - noise_level: The level of systematic shift to apply to BPM readings (in meters).
+    - x_shift: Whether to apply shift on X-axis.
+    - y_shift: Whether to apply shift on Y-axis.
+    - verbose: Boolean flag to control print statements.
+
+    Returns:
+    - actual_deltas: Dictionary of actual quadrupole error deltas.
+    - predicted_deltas: Dictionary of predicted quadrupole error deltas.
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.eval()
+
+    # Extract FODO cell indices from merged_config
+    if merged_config['target_data'] == 'quad_misalign_deltas':
+        target_errors_key = 'quad_errors'
+    elif merged_config['target_data'] == 'quad_tilt_angles':
+        target_errors_key = 'quad_tilt_errors'
+    elif merged_config['target_data'] == 'dipole_tilt_angles':
+        target_errors_key = 'dipole_tilt_errors'
+    fodo_cell_indices = [err['FODO_index'] for err in merged_config[target_errors_key]]
+
+    actual_deltas = {}
+    predicted_deltas = {}
+
+    for batch_inputs, batch_targets in val_loader:
+        batch_inputs = batch_inputs.to(device)
+        batch_targets = batch_targets.cpu().numpy()
+
+        # Apply systematic BPM shifts
+        if noise_type == 'bpm_shift' and noise_level != 0:
+            shift_axes = []
+            if x_shift:
+                shift_axes.append('x')
+            if y_shift:
+                shift_axes.append('y')
+            if verbose:
+                print(f"Applying systematic shift of {noise_level*1e6:.1f}μm to BPM readings on axes: {shift_axes}")
+
+            # Reshape inputs to (batch_size, n_turns, n_BPMs, n_planes)
+            batch_size, n_turns, input_size = batch_inputs.shape
+            n_BPMs = input_size // 2  # Assuming 2 planes (x, y)
+            batch_inputs_reshaped = batch_inputs.reshape(batch_size, n_turns, n_BPMs, 2)
+
+            # Apply shifts
+            for axis, plane_idx in [('x', 0), ('y', 1)]:
+                if axis in shift_axes:
+                    batch_inputs_reshaped[:, :, :, plane_idx] += noise_level
+                    if verbose:
+                        print(f"  Applied {noise_level*1e6:.1f}μm shift to {axis}-axis")
+
+            # Reshape back to (batch_size, n_turns, input_size)
+            batch_inputs = batch_inputs_reshaped.reshape(batch_size, n_turns, input_size)
+
+        # Perform inference
+        with torch.no_grad():
+            predicted_errors = model(batch_inputs)
+        predicted_errors = predicted_errors.cpu().numpy()
+
+        # Inverse transform predictions and targets
+        predicted_errors_transformed = dataset_scalers['target_scaler'].inverse_transform(predicted_errors)
+        batch_targets_transformed = dataset_scalers['target_scaler'].inverse_transform(batch_targets)
+
+        # Store actual and predicted deltas
+        for batch_idx in range(batch_targets.shape[0]):
+            for fodo_idx, quad_idx in enumerate(fodo_cell_indices):
+                sample_idx = len(actual_deltas)  # Unique index for each sample
+                actual_deltas[sample_idx] = batch_targets_transformed[batch_idx, fodo_idx]
+                predicted_deltas[sample_idx] = predicted_errors_transformed[batch_idx, fodo_idx]
+                if verbose:
+                    print(f"Sample {sample_idx}, FODO {quad_idx}:")
+                    print(f"\tActual delta: {actual_deltas[sample_idx]:.7e}, {actual_deltas[sample_idx] * 1e6}μm")
+                    print(f"\tPredicted delta: {predicted_deltas[sample_idx]:.7e}, {predicted_deltas[sample_idx] * 1e6}μm")
+                    print('---')
+
+    return actual_deltas, predicted_deltas
+
+
+def _run_evaluation(model, base_configurations, common_parameters, dataset_scalers, 
+                    noise_type=None, noise_level=0.0, x_shift=False, y_shift=False, 
+                    plot=False, verbose=True):
     """
     Common evaluation function that runs the simulation, applies noise if specified,
     predicts errors using the model, applies corrections, and optionally plots the results.
@@ -181,6 +272,9 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
     - dataset_scalers: Dictionary containing 'input_scaler' and 'target_scaler'.
     - noise_type: BPM noise or quad_tilt noise. 'bpm', 'quad_tilt'
     - noise_level: The level of noise to add to BPM readings. If 0, no noise is added.
+    - x_shift: Whether to apply shift on X-axis (only for noise_type='bpm_shift')
+    - y_shift: Whether to apply shift on Y-axis (only for noise_type='bpm_shift')
+
     - plot: Boolean flag to control plotting. True for evaluate_once(), False for benchmarking.
     - verbose: Boolean flag to control print statements.
     
@@ -305,6 +399,7 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
 
     merged_config = {**common_parameters, **eval_config}
 
+    # BPM Random Noise handling
     if noise_type == 'bpm' and noise_level > 0:
         if verbose:
             print(f"Applying random noise to BPM readings in X and Y axis ±{noise_level}.")
@@ -313,7 +408,23 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
         simulator_with_error.bpm_readings['y'] = simulator_with_error.bpm_readings['y'] + \
             np.random.uniform(-noise_level, noise_level, simulator_with_error.bpm_readings['y'].shape)
     
-    
+    # BPM Systematic Shift handling
+    if noise_type == 'bpm_shift' and noise_level != 0:
+        shift_axes = []
+        if x_shift:
+            shift_axes.append('x')
+        if y_shift:
+            shift_axes.append('y')
+            
+        if verbose:
+            print(f"Applying systematic shift of {noise_level*1e6:.1f}μm to BPM readings on axes: {shift_axes}")
+        
+        for axis in shift_axes:
+            if axis in simulator_with_error.bpm_readings:
+                simulator_with_error.bpm_readings[axis] = simulator_with_error.bpm_readings[axis] + noise_level
+                if verbose:
+                    print(f"  Applied {noise_level*1e6:.1f}μm shift to {axis}-axis")    
+
     # Create SimulationDataset instance
     simulation_dataset = SimulationDataset(
         merged_config=merged_config,
@@ -638,9 +749,25 @@ def split_merged_config(merged_config):
     return base_configurations, common_parameters
 
 
-def main_evaluation_block(model, data_sub_cfg, benchmark_type=None, run_benchmark=False):
+def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=None, run_benchmark=False, 
+                          bpm_noise_range=[0, 100e-6], quad_tilt_noise_range=[0.01, 0.05],
+                          shift_range=[-100e-6, 100e-6], bins=11, runs=50,
+                          x_shift=True, y_shift=True):
     '''
-    benchmark_type: 'bpm' or 'quad_tilt'
+    Main evaluation function to run model evaluation or benchmarking.
+
+    Args:
+        model: The trained model.
+        data_sub_cfg: Dictionary containing configuration data (merged_config, scalers, etc.).
+        benchmark_type: Type of benchmark ('bpm', 'quad_tilt', 'bpm_shift').
+        run_benchmark: Boolean to indicate whether to run benchmarking or single evaluation.
+        bpm_noise_range: List of [min, max] BPM noise range in meters for bpm benchmark.
+        quad_tilt_noise_range: List of [min, max] quadrupole tilt noise range in mrads for quad_tilt benchmark.
+        bins: Number of bins for noise/shift levels in benchmarks.
+        runs: Number of runs per noise/shift level in benchmarks.
+        shift_range: List of [min, max] BPM shift range in meters for bpm_shift benchmark.
+        x_shift: Boolean to apply shifts on X-axis for bpm_shift benchmark.
+        y_shift: Boolean to apply shifts on Y-axis for bpm_shift benchmark.
     '''
     
     merged_config = data_sub_cfg['merged_config']
@@ -659,128 +786,252 @@ def main_evaluation_block(model, data_sub_cfg, benchmark_type=None, run_benchmar
     if run_benchmark and benchmark_type is not None:
         run_evaluate_once = False
     
+    # Initialize benchmark parameters
     if benchmark_type == 'bpm':
         print("Running benchmark for BPM noise...")
-
-        # Parameters for benchmarking BPM noise
-        NOISE_START = 0
-        NOISE_STOP = 100e-6  # meters
-        BINS = 11
-        NOISE_PALLETTE = np.linspace(NOISE_START, NOISE_STOP, BINS)  # Converted to micro-units for consistency with example
-        # Number of runs per noise level
-        RUNS_PER_NOISE = 50
+        NOISE_START, NOISE_STOP = bpm_noise_range
+        NOISE_PALLETTE = np.linspace(NOISE_START, NOISE_STOP, bins)
 
     elif benchmark_type == 'quad_tilt':
         print("Running benchmark for Quadrupole Tilt noise...")
-        
-        # Parameters for benchmarking quad_tilt
-        NOISE_START = 0.01  # mrads
-        NOISE_STOP = 0.05  # mrads
-        BINS = 5
-        NOISE_PALLETTE = np.linspace(NOISE_START, NOISE_STOP, BINS)  # Converted to micro-units for consistency with example
-        # Number of runs per noise level
-        RUNS_PER_NOISE = 50
+        NOISE_START, NOISE_STOP = quad_tilt_noise_range
+        NOISE_PALLETTE = np.linspace(NOISE_START, NOISE_STOP, bins)
+
+    elif benchmark_type == 'bpm_shift':
+        print("Running benchmark for BPM shift...")
+        NOISE_START, NOISE_STOP = shift_range
+        NOISE_PALLETTE = np.linspace(NOISE_START, NOISE_STOP, bins)
+        print(f"BPM Shift Benchmark - Testing axes: {'x' if x_shift else ''}{'y' if y_shift else ''}")
 
     CANCEL_TILT_ERROR = False
     CANCEL_MISALIGN_ERROR = False
 
+    # Split merged_config into base_configurations and common_parameters
     base_configurations, common_parameters = split_merged_config(merged_config)
-    base_configurations = overridden_base_config
+    
+    # Merge overridden_base_config into base_configurations[0] to preserve list structure
+    if isinstance(overridden_base_config, dict):
+        base_configurations[0].update(overridden_base_config)
+    elif isinstance(overridden_base_config, list):
+        base_configurations = overridden_base_config  # Use directly if already a list
 
     # Set up FODO mapping dictionary
-    # This dictionary maps each prediction output index to the corresponding FODO indices where errors were introduced.
-    # The target data preparation and network output are ordered according to the configured quad_errors.
     fodo_mapping = {}
-    
-    # Extract FODO cell indices
     if merged_config['target_data'] == 'quad_misalign_deltas':
         target_errors_cfg = merged_config['quad_errors']
-        
     elif merged_config['target_data'] == 'quad_tilt_angles':
         target_errors_cfg = merged_config['quad_tilt_errors']
-        
     elif merged_config['target_data'] == 'dipole_tilt_angles':
         target_errors_cfg = merged_config['dipole_tilt_errors']
     
     for qe_ix, qe in enumerate(target_errors_cfg):
         fodo_mapping[qe_ix] = qe['FODO_index']
 
-
     benchmark_info = {
         "benchmark_type": benchmark_type,
         "noise_start": NOISE_START,
         "noise_stop": NOISE_STOP,
-        "bins": BINS,
+        "bins": bins,
         "noise_pallette": NOISE_PALLETTE,
-        "runs_per_noise": RUNS_PER_NOISE,
+        "runs_per_noise": runs,
         "fodo_mapping": fodo_mapping,
         "cancel_tilt_error": CANCEL_TILT_ERROR,
         "cancel_misalign_error": CANCEL_MISALIGN_ERROR
     }
 
     if CANCEL_TILT_ERROR:
-        base_configurations['quad_tilt_errors'] = []
-        base_configurations['dipole_tilt_errors'] = []
+        base_configurations[0]['quad_tilt_errors'] = []
+        base_configurations[0]['dipole_tilt_errors'] = []
 
     if CANCEL_MISALIGN_ERROR:
-        base_configurations['quad_errors'] = []
+        base_configurations[0]['quad_errors'] = []
 
     if CANCEL_TILT_ERROR and CANCEL_MISALIGN_ERROR:
         common_parameters['target_data'] = False
 
     common_parameters['num_particles'] = 10
 
-
     if run_evaluate_once:
-        evaluate_once(model, [base_configurations], common_parameters, dataset_scalers)
+        evaluate_once(model, base_configurations, common_parameters, dataset_scalers)
 
     elif run_benchmark:
         if CANCEL_MISALIGN_ERROR and CANCEL_TILT_ERROR:
             print("BENCHMARK was not run!!")
-        
-        elif benchmark_type == 'bpm':
-            print("Running bpm benchmark...")
-            stats = benchmark_evaluation_bpm_noise(
+            return
+
+        # For bpm_shift, use existing data if val_loader is provided
+        if benchmark_type == 'bpm_shift' and val_loader is not None:
+            print("Running bpm_shift benchmark with existing data...")
+            stats = benchmark_evaluation_bpm_shift(
                 model=model,
-                base_configurations=[base_configurations],
+                base_configurations=base_configurations,
                 common_parameters=common_parameters,
+                val_loader=val_loader,
                 dataset_scalers=dataset_scalers,
-                noise_start=NOISE_START,
-                noise_stop=NOISE_STOP,                
-                bins=BINS,
-                runs=RUNS_PER_NOISE
+                merged_config=merged_config,
+                shift_start=NOISE_START,
+                shift_stop=NOISE_STOP,
+                bins=bins,
+                runs=runs,
+                x_shift=x_shift,
+                y_shift=y_shift
             )
-            
+
             stats['benchmark_info'] = benchmark_info
-            
-            save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_bpm_MisAlign-True_Tilt_True.pt"
-            
+            save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_bpm_shift_MisAlign-True_Tilt-True.pt"
             print(f"save_stats_path: {save_stats_path}")
+            torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
+            plot_benchmark_stats(stats, benchmark_info)
+            
+        else:
+            if benchmark_type == 'bpm':
+                print("Running bpm benchmark...")
+                stats = benchmark_evaluation_bpm_noise(
+                    model=model,
+                    base_configurations=base_configurations,
+                    common_parameters=common_parameters,
+                    dataset_scalers=dataset_scalers,
+                    noise_start=NOISE_START,
+                    noise_stop=NOISE_STOP,
+                    bins=bins,
+                    runs=runs
+                )
+                
+                stats['benchmark_info'] = benchmark_info
+                save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_bpm_MisAlign-True_Tilt_True.pt"
+                print(f"save_stats_path: {save_stats_path}")
+                torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
+                plot_benchmark_stats(stats, benchmark_info)
+
+            elif benchmark_type == 'quad_tilt':
+                print("Running quad_tilt benchmark...")
+                stats = benchmark_evaluation_tilt_noise(
+                    model=model,
+                    base_configurations=base_configurations,
+                    common_parameters=common_parameters,
+                    dataset_scalers=dataset_scalers,
+                    noise_start=NOISE_START,
+                    noise_stop=NOISE_STOP,
+                    bins=bins,
+                    runs=runs
+                )
+
+                stats['benchmark_info'] = benchmark_info
+                save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_quad_tilt_MisAlign-True_Tilt-True.pt"
+                print(f"save_stats_path: {save_stats_path}")
+                torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
+                plot_benchmark_stats(stats, benchmark_info)
+
+            # elif benchmark_type == 'bpm_shift':
+            #     print("Running bpm_shift benchmark...")
+            #     stats = benchmark_evaluation_bpm_shift(
+            #         model=model,
+            #         base_configurations=base_configurations,
+            #         common_parameters=common_parameters,
+            #         dataset_scalers=dataset_scalers,
+            #         shift_start=NOISE_START,
+            #         shift_stop=NOISE_STOP,
+            #         bins=bins,
+            #         runs=runs,
+            #         x_shift=x_shift,
+            #         y_shift=y_shift
+            #     )
+
+            #     stats['benchmark_info'] = benchmark_info
+            #     save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_bpm_shift_MisAlign-True_Tilt-True.pt"
+            #     print(f"save_stats_path: {save_stats_path}")
+            #     torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
+            #     plot_benchmark_stats(stats, benchmark_info)
+                
+
+def benchmark_evaluation_bpm_shift(model, base_configurations, common_parameters, val_loader=None, dataset_scalers=None, merged_config=None,  
+                                  shift_start=0, shift_stop=100e-6, bins=11, runs=20, 
+                                  x_shift=True, y_shift=True):
+    """
+    Tests model reliability with systematic BPM shifts on X/Y axes using either existing data or simulated data.
     
-            torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
+    Parameters:
+    - model: The trained model.
+    - val_loader: DataLoader for existing validation dataset (optional).
+    - dataset_scalers: Dictionary containing 'input_scaler' and 'target_scaler' (required if val_loader is provided).
+    - merged_config: Merged configuration dictionary (required if val_loader is provided).
+    - shift_start: Minimum shift level to apply (in meters).
+    - shift_stop: Maximum shift level to apply (in meters).
+    - bins: Number of shift levels to test.
+    - runs: Number of evaluations to run per shift level.
+    - x_shift: Whether to apply shifts on X-axis.
+    - y_shift: Whether to apply shifts on Y-axis.
+    
+    Returns:
+    - stats: Dictionary containing statistics for each shift level and FODO index.
+    """
+    if val_loader is not None and (dataset_scalers is None or merged_config is None):
+        raise ValueError("dataset_scalers and merged_config must be provided when using val_loader")
 
-            plot_benchmark_stats(stats, benchmark_info)
-
-        elif benchmark_type == 'quad_tilt':
-            print("Running quad_tilt benchmark...")
-            stats = benchmark_evaluation_tilt_noise(
-                model=model,
-                base_configurations=[base_configurations],
-                common_parameters=common_parameters,
-                dataset_scalers=dataset_scalers,
-                noise_start=NOISE_START,
-                noise_stop=NOISE_STOP,
-                bins=BINS,
-                runs=RUNS_PER_NOISE
-            )
-
-            stats['benchmark_info'] = benchmark_info
-
-            save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_quad_tilt_MisAlign-True_Tilt-True.pt"
-
-            print(f"save_stats_path: {save_stats_path}")
-
-            torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
-
-            plot_benchmark_stats(stats, benchmark_info)
-
+    shift_levels = np.linspace(shift_start, shift_stop, bins)
+    
+    # Initialize a dictionary to store statistics
+    stats = defaultdict(lambda: defaultdict(list))  # stats[shift_level][fodo_index] = list of errors
+    
+    shift_axes = []
+    if x_shift:
+        shift_axes.append('x')
+    if y_shift:
+        shift_axes.append('y')
+    
+    if not shift_axes:
+        raise ValueError("At least one of x_shift or y_shift must be True")
+    
+    print(f"BPM Shift Benchmark - Testing axes: {shift_axes}")
+    
+    if val_loader is not None:
+        for shift_level in shift_levels:
+            print(f"Testing BPM shift: {shift_level*1e6:.1f}μm on axes {shift_axes}")
+            if model.training:
+                model.eval()
+            
+            for run in range(runs):
+                print(f"\t-------------[Run {run + 1}/{runs}]")
+                actual_deltas, predicted_deltas = evaluate_with_existing_data(
+                    model=model,
+                    val_loader=val_loader,
+                    dataset_scalers=dataset_scalers,
+                    merged_config=merged_config,
+                    noise_type='bpm_shift',
+                    noise_level=shift_level,
+                    x_shift=x_shift,
+                    y_shift=y_shift,
+                    verbose=False
+                )
+                for fodo_ix in actual_deltas:
+                    error = np.abs(actual_deltas[fodo_ix] - predicted_deltas[fodo_ix])
+                    stats[shift_level][fodo_ix].append(error)
+                
+                print(f"Completed benchmarking for shift_level={shift_level*1e6:.1f}μm.")
+    else:
+        for shift_level in shift_levels:
+            print(f"Testing BPM shift: {shift_level*1e6:.1f}μm on axes {shift_axes}")
+            if model.training:
+                model.eval()
+            
+            for run in range(runs):
+                print(f"\t-------------[Run {run + 1}/{runs}]")
+                actual_deltas, predicted_deltas = _run_evaluation(
+                    model=model,
+                    base_configurations=base_configurations,
+                    common_parameters=common_parameters,
+                    dataset_scalers=dataset_scalers,
+                    noise_type='bpm_shift',
+                    noise_level=shift_level,
+                    x_shift=x_shift,
+                    y_shift=y_shift,
+                    plot=False,
+                    verbose=False
+                )
+                for fodo_ix in actual_deltas:
+                    error = np.abs(actual_deltas[fodo_ix] - predicted_deltas[fodo_ix])
+                    stats[shift_level][fodo_ix].append(error)
+                
+                print(f"Completed benchmarking for shift_level={shift_level*1e6:.1f}μm.")
+    
+    return stats
