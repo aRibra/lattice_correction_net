@@ -990,22 +990,21 @@ def benchmark_evaluation_bpm_shift(model, base_configurations, common_parameters
             if model.training:
                 model.eval()
             
-            for run in range(runs):
-                print(f"\t-------------[Run {run + 1}/{runs}]")
-                actual_deltas, predicted_deltas = evaluate_with_existing_data(
-                    model=model,
-                    val_loader=val_loader,
-                    dataset_scalers=dataset_scalers,
-                    merged_config=merged_config,
-                    noise_type='bpm_shift',
-                    noise_level=shift_level,
-                    x_shift=x_shift,
-                    y_shift=y_shift,
-                    verbose=False
-                )
-                for fodo_ix in actual_deltas:
-                    error = np.abs(actual_deltas[fodo_ix] - predicted_deltas[fodo_ix])
-                    stats[shift_level][fodo_ix].append(error)
+            # Process each sample in validation set as a separate run
+            for batch_inputs, batch_targets in val_loader:
+                # Apply shifts and get predictions for entire batch
+                with torch.no_grad():
+                    predicted_errors = model(batch_inputs.cuda()).cpu().numpy()
+            
+                # Inverse transform predictions and targets
+                predicted_transformed = dataset_scalers['target_scaler'].inverse_transform(predicted_errors)
+                actual_transformed = dataset_scalers['target_scaler'].inverse_transform(batch_targets.numpy())
+            
+                # Process each sample in batch as individual run
+                for sample_idx in range(batch_targets.shape[0]):
+                    for fodo_ix in range(len(merged_config[target_errors_key])):
+                        error = np.abs(actual_transformed[sample_idx, fodo_ix] - predicted_transformed[sample_idx, fodo_ix])
+                        stats[shift_level][fodo_ix].append(error)
                 
                 print(f"Completed benchmarking for shift_level={shift_level*1e6:.1f}μm.")
     else:
