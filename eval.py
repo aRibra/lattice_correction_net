@@ -765,7 +765,7 @@ def split_merged_config(merged_config):
 def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=None, run_benchmark=False, 
                           bpm_noise_range=[0, 100e-6], quad_tilt_noise_range=[0.01, 0.05],
                           shift_range=[-100e-6, 100e-6], bins=11, runs=50,
-                          x_shift=True, y_shift=True):
+                          x_shift=False, y_shift=False):
     '''
     Main evaluation function to run model evaluation or benchmarking.
 
@@ -849,7 +849,9 @@ def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=N
         "runs_per_noise": runs,
         "fodo_mapping": fodo_mapping,
         "cancel_tilt_error": CANCEL_TILT_ERROR,
-        "cancel_misalign_error": CANCEL_MISALIGN_ERROR
+        "cancel_misalign_error": CANCEL_MISALIGN_ERROR,
+        "x_shift": x_shift,
+        "y_shift": y_shift
     }
 
     if CANCEL_TILT_ERROR:
