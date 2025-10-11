@@ -49,16 +49,16 @@ def load_data_from_dir(data_dir=None, override_config=True):
 
         sim_data = {}
 
-        sim_data[C.DATA_KEY_ALL_ERROR_VALUES_DIPOLE_TILT] =   torch.load(f'{data_dir}/{C.DATA_KEY_ALL_ERROR_VALUES_DIPOLE_TILT}-{postfix}.pt')
-        sim_data[C.DATA_KEY_ALL_ERROR_VALUES_QUAD_MISALIGN] = torch.load(f'{data_dir}/{C.DATA_KEY_ALL_ERROR_VALUES_QUAD_MISALIGN}-{postfix}.pt')
-        sim_data[C.DATA_KEY_ALL_ERROR_VALUES_QUAD_TILT] =     torch.load(f'{data_dir}/{C.DATA_KEY_ALL_ERROR_VALUES_QUAD_TILT}-{postfix}.pt')
+        sim_data[C.DATA_KEY_ALL_ERROR_VALUES_DIPOLE_TILT] =   torch.load(f'{data_dir}/{C.DATA_KEY_ALL_ERROR_VALUES_DIPOLE_TILT}-{postfix}.pt', weights_only=True)
+        sim_data[C.DATA_KEY_ALL_ERROR_VALUES_QUAD_MISALIGN] = torch.load(f'{data_dir}/{C.DATA_KEY_ALL_ERROR_VALUES_QUAD_MISALIGN}-{postfix}.pt', weights_only=True)
+        sim_data[C.DATA_KEY_ALL_ERROR_VALUES_QUAD_TILT] =     torch.load(f'{data_dir}/{C.DATA_KEY_ALL_ERROR_VALUES_QUAD_TILT}-{postfix}.pt', weights_only=True)
         sim_data[C.DATA_KEY_DATA_AUTOMATION] =                torch.load(f'{data_dir}/{C.DATA_KEY_DATA_AUTOMATION}-{postfix}.pt')
         sim_data[C.DATA_KEY_DATASET_SCALERS] =                torch.load(f'{data_dir}/{C.DATA_KEY_DATASET_SCALERS}-{postfix}.pt')
-        sim_data[C.DATA_KEY_INPUT_TENSORS] =                  torch.load(f'{data_dir}/{C.DATA_KEY_INPUT_TENSORS}-{postfix}.pt')
-        sim_data[C.DATA_KEY_INPUT_TENSORS_SCALED] =           torch.load(f'{data_dir}/{C.DATA_KEY_INPUT_TENSORS_SCALED}-{postfix}.pt')
+        sim_data[C.DATA_KEY_INPUT_TENSORS] =                  torch.load(f'{data_dir}/{C.DATA_KEY_INPUT_TENSORS}-{postfix}.pt', weights_only=True)
+        sim_data[C.DATA_KEY_INPUT_TENSORS_SCALED] =           torch.load(f'{data_dir}/{C.DATA_KEY_INPUT_TENSORS_SCALED}-{postfix}.pt', weights_only=True)
         sim_data[C.DATA_KEY_MERGED_CONFIG] =                  torch.load(f'{data_dir}/{C.DATA_KEY_MERGED_CONFIG}-{postfix}.pt')
-        sim_data[C.DATA_KEY_TARGET_TENSORS] =                 torch.load(f'{data_dir}/{C.DATA_KEY_TARGET_TENSORS}-{postfix}.pt')
-        sim_data[C.DATA_KEY_TARGET_TENSORS_SCALED] =          torch.load(f'{data_dir}/{C.DATA_KEY_TARGET_TENSORS_SCALED}-{postfix}.pt')
+        sim_data[C.DATA_KEY_TARGET_TENSORS] =                 torch.load(f'{data_dir}/{C.DATA_KEY_TARGET_TENSORS}-{postfix}.pt', weights_only=True)
+        sim_data[C.DATA_KEY_TARGET_TENSORS_SCALED] =          torch.load(f'{data_dir}/{C.DATA_KEY_TARGET_TENSORS_SCALED}-{postfix}.pt', weights_only=True)
 
         data_automation = sim_data[C.DATA_KEY_DATA_AUTOMATION]
 

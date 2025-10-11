@@ -29,9 +29,15 @@ def inference_on_validation_data(model, val_loader, dataset_scalers, merged_conf
         None
     """
     
-    all_mean_min, all_mean_max = dataset_scalers['target_scaler'].data_min_, dataset_scalers['target_scaler'].data_max_
-    all_mean_scaler = all_mean_max - all_mean_min
-
+    print(".....[[Running inference_on_validation_data]].....")
+    
+    print("dataset_scalers['target_scaler']------ ", dataset_scalers['target_scaler'])
+    print(dataset_scalers['target_scaler'].data_range_)
+    print(dataset_scalers['target_scaler'].data_max_)
+    print(dataset_scalers['target_scaler'].data_min_)
+    print(dataset_scalers['target_scaler'].scale_)
+    print(dataset_scalers['target_scaler'].min_)
+    
 
     # Extract FODO cell indices
     if merged_config['target_data'] == 'quad_misalign_deltas':
@@ -46,7 +52,7 @@ def inference_on_validation_data(model, val_loader, dataset_scalers, merged_conf
     # Batch parameters
     batch_limit_s = 0
     batch_limit_e = 16
-    nb_batches = 4
+    nb_batches = 6
     batch_counter = 0
 
     # Number of columns for subplots
@@ -68,8 +74,10 @@ def inference_on_validation_data(model, val_loader, dataset_scalers, merged_conf
         output = output.cpu()
 
         # Scale the targets and outputs
-        batch_targets_scaled = batch_targets * all_mean_scaler * 1e6
-        output_scaled = output * all_mean_scaler * 1e6
+        # Apply inverse transform and convert to microns                     
+        output_scaled = dataset_scalers['target_scaler'].inverse_transform(output.cpu().numpy()) * 1e6
+        # Apply inverse transform and convert to microns                     
+        batch_targets_scaled = dataset_scalers['target_scaler'].inverse_transform(batch_targets.cpu().numpy()) * 1e6
 
         # Calculate residuals
         err_resid = output_scaled - batch_targets_scaled[batch_limit_s:batch_limit_e]
@@ -104,20 +112,20 @@ def inference_on_validation_data(model, val_loader, dataset_scalers, merged_conf
 
             # Plotting on the main axes
             main_ax.plot(
-                batch_targets_scaled.cpu()[:, quad_idx_pred],
+                batch_targets_scaled[:, quad_idx_pred],
                 '-gs',
                 lw=5,  # Increased line width for better visibility
                 alpha=0.5,
                 label='Ground Truth'
             )
             main_ax.plot(
-                output_scaled[:, quad_idx_pred].cpu(),
+                output_scaled[:, quad_idx_pred],
                 '-.b',
                 lw=2,
                 label='Prediction'
             )
             main_ax.plot(
-                err_resid.cpu()[:, quad_idx_pred],
+                err_resid[:, quad_idx_pred],
                 '-or',
                 lw=1,
                 label='Residual Error'
@@ -133,7 +141,7 @@ def inference_on_validation_data(model, val_loader, dataset_scalers, merged_conf
 
             # Plotting on the residual axes
             resid_ax.plot(
-                err_resid.cpu()[:, quad_idx_pred],
+                err_resid[:, quad_idx_pred],
                 '-or',
                 lw=1,
                 label='Residual Error'
@@ -221,6 +229,9 @@ def evaluate_with_existing_data(model, val_loader, dataset_scalers, merged_confi
 
             # Reshape inputs to (batch_size, n_turns, n_BPMs, n_planes)
             batch_size, n_turns, input_size = batch_inputs.shape
+            # TODO(aribra): support only x | y
+            if input_size == 1:
+                raise Exception("[evaluate_with_existing_data()] still does not support evaluating on single plane.")
             n_BPMs = input_size // 2  # Assuming 2 planes (x, y)
             batch_inputs_reshaped = batch_inputs.reshape(batch_size, n_turns, n_BPMs, 2)
 
@@ -374,8 +385,8 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
                     print("_run_evaluation()/ ", qe_ix, qe)
             else:
                 eval_config['dipole_tilt_errors'][qe_ix]['tilt_angle'] = 0.0
-            
-                
+
+
 
     if verbose:
         print("evaluate_model()/ base_configurations: ", eval_config)
@@ -458,6 +469,8 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
      error_values_dipole_tilt) = simulation_dataset.generate_data(
         start_rev, end_rev, fodo_cell_indices, planes
     )
+     
+    torch.save(input_tensor, "notebooks/input_tensor_eval.pt")
 
     # Reshape input data to match model input
     n_samples, n_turns, n_BPMs, n_planes = input_tensor.shape
@@ -664,7 +677,7 @@ def benchmark_evaluation_bpm_noise(model, base_configurations, common_parameters
                 noise_type='bpm',
                 noise_level=noise_level,
                 plot=False,
-                verbose=False
+                verbose=True
             )
             for fodo_ix in actual_deltas:
                 error = np.abs(actual_deltas[fodo_ix] - predicted_deltas[fodo_ix])
@@ -849,7 +862,7 @@ def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=N
     if CANCEL_TILT_ERROR and CANCEL_MISALIGN_ERROR:
         common_parameters['target_data'] = False
 
-    common_parameters['num_particles'] = 10
+    # common_parameters['num_particles'] = 10
 
     if run_evaluate_once:
         evaluate_once(model, base_configurations, common_parameters, dataset_scalers)
@@ -860,7 +873,7 @@ def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=N
             return
 
         # For bpm_shift, use existing data if val_loader is provided
-        if benchmark_type == 'bpm_shift' and val_loader is not None:
+        if benchmark_type == 'bpm_shift': #and val_loader is not None
             print("Running bpm_shift benchmark with existing data...")
             stats = benchmark_evaluation_bpm_shift(
                 model=model,
@@ -922,27 +935,6 @@ def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=N
                 torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
                 plot_benchmark_stats(stats, benchmark_info)
 
-            # elif benchmark_type == 'bpm_shift':
-            #     print("Running bpm_shift benchmark...")
-            #     stats = benchmark_evaluation_bpm_shift(
-            #         model=model,
-            #         base_configurations=base_configurations,
-            #         common_parameters=common_parameters,
-            #         dataset_scalers=dataset_scalers,
-            #         shift_start=NOISE_START,
-            #         shift_stop=NOISE_STOP,
-            #         bins=bins,
-            #         runs=runs,
-            #         x_shift=x_shift,
-            #         y_shift=y_shift
-            #     )
-
-            #     stats['benchmark_info'] = benchmark_info
-            #     save_stats_path = f"{SAVE_DIR_BENCHMARKS}/benchmark_stats_bpm_shift_MisAlign-True_Tilt-True.pt"
-            #     print(f"save_stats_path: {save_stats_path}")
-            #     torch.save(convert_defaultdict_to_dict(stats), save_stats_path)
-            #     plot_benchmark_stats(stats, benchmark_info)
-                
 
 def benchmark_evaluation_bpm_shift(model, base_configurations, common_parameters, val_loader=None, dataset_scalers=None, merged_config=None,  
                                   shift_start=0, shift_stop=100e-6, bins=11, runs=20, 
@@ -984,30 +976,36 @@ def benchmark_evaluation_bpm_shift(model, base_configurations, common_parameters
     
     print(f"BPM Shift Benchmark - Testing axes: {shift_axes}")
     
+    print("val_loader = ", val_loader)
+    
     if val_loader is not None:
         for shift_level in shift_levels:
             print(f"Testing BPM shift: {shift_level*1e6:.1f}μm on axes {shift_axes}")
             if model.training:
                 model.eval()
             
-            # Process each sample in validation set as a separate run
-            for batch_inputs, batch_targets in val_loader:
-                # Apply shifts and get predictions for entire batch
-                with torch.no_grad():
-                    predicted_errors = model(batch_inputs.cuda()).cpu().numpy()
-            
-                # Inverse transform predictions and targets
-                predicted_transformed = dataset_scalers['target_scaler'].inverse_transform(predicted_errors)
-                actual_transformed = dataset_scalers['target_scaler'].inverse_transform(batch_targets.numpy())
-            
-                # Process each sample in batch as individual run
-                for sample_idx in range(batch_targets.shape[0]):
-                    for fodo_ix in range(len(merged_config[target_errors_key])):
-                        error = np.abs(actual_transformed[sample_idx, fodo_ix] - predicted_transformed[sample_idx, fodo_ix])
-                        stats[shift_level][fodo_ix].append(error)
+            for run in range(runs):
+                print(f"\t-------------[Run {run + 1}/{runs}]")
+                actual_deltas, predicted_deltas = evaluate_with_existing_data(
+                    model=model,
+                    val_loader=val_loader,
+                    dataset_scalers=dataset_scalers,
+                    merged_config=merged_config,
+                    noise_type='bpm_shift',
+                    noise_level=shift_level,
+                    x_shift=x_shift,
+                    y_shift=y_shift,
+                    verbose=False
+                )
+                for fodo_ix in actual_deltas:
+                    error = np.abs(actual_deltas[fodo_ix] - predicted_deltas[fodo_ix])
+                    stats[shift_level][fodo_ix].append(error)
                 
                 print(f"Completed benchmarking for shift_level={shift_level*1e6:.1f}μm.")
     else:
+        
+        print("val_loader is None 00000000000000000000000000000000000000000000")
+        
         for shift_level in shift_levels:
             print(f"Testing BPM shift: {shift_level*1e6:.1f}μm on axes {shift_axes}")
             if model.training:

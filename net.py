@@ -431,7 +431,7 @@ def build_model(model_type, data_shapes, device, **kwargs):
 
 def load_from_checkpoint(model, model_load_path):
     # Load model from checkpoint
-    chkpnt_state_dict = torch.load(model_load_path)
+    chkpnt_state_dict = torch.load(model_load_path, weights_only=True)
     model.load_state_dict(chkpnt_state_dict)
     print("Checkpoint Loaded.")
     return model

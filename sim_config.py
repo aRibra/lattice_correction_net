@@ -133,7 +133,7 @@ common_parameters = {
     'p': 5.344286e-19,                # Momentum in kg m/s (p_GeV_c=0.7)
     'G': 1.0,                         # Tesla/meter
     'q': 1.602e-19,                   # Proton charge in Coulombs
-    'n_turns': 5000,                   # Number of revolutions to simulate
+    'n_turns': 6000,                   # Number of revolutions to simulate
     'num_particles': 5,             # Number of particles to simulate
     'window_size': 10,                # Average window size for moving averages
     'use_thin_lens': True,

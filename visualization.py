@@ -23,9 +23,6 @@ def print_maes_micron(val_maes, target_scaler):
     print("val_maes_microns: ", val_maes_microns)
 
 
-import matplotlib.pyplot as plt
-import numpy as np
-
 # Assuming C and SAVE_DIR_FIGS are defined elsewhere in your code
 # For example:
 # class C:
@@ -36,8 +33,6 @@ import numpy as np
 #     DATA_KEY_MERGED_CONFIG = 'merged_config'
 #
 # SAVE_DIR_FIGS = '/path/to/save/figures'
-import matplotlib.pyplot as plt
-import numpy as np
 
 def plot_data_histograms(sim_data,
                          plot_com_deltas_x=True,
@@ -164,7 +159,7 @@ def plot_data_histograms(sim_data,
         plt.savefig(f"{SAVE_DIR_FIGS}/quad_tilt_error_hist.eps", bbox_inches='tight', format='eps')
         plt.show()
 
-    
+
 def get_local_plt_markers(nb_binz):
     plt_markers = Line2D.markers.copy()
     plt_markers.pop('')
@@ -182,6 +177,10 @@ def get_local_plt_markers(nb_binz):
 
 
 def plot_benchmark_stats(stats, benchmark_info):
+    """
+    Plot benchmark statistics for different noise/shift types.
+    Uses consistent units across all benchmark types.
+    """
     noise_range = (benchmark_info["noise_start"], benchmark_info["noise_stop"])
     bins = benchmark_info["bins"]
     noise_pallette = benchmark_info["noise_pallette"]
@@ -189,6 +188,7 @@ def plot_benchmark_stats(stats, benchmark_info):
     fodo_mapping = benchmark_info["fodo_mapping"]
     cancel_tilt_error = benchmark_info["cancel_tilt_error"]
     cancel_misalign_error = benchmark_info["cancel_misalign_error"]
+    benchmark_type = benchmark_info.get("benchmark_type", "bpm")
 
     mean_errors = defaultdict(dict)
     std_errors = defaultdict(dict)
@@ -214,33 +214,57 @@ def plot_benchmark_stats(stats, benchmark_info):
         means = [mean_errors[noise][fodo_ix] for noise in noise_pallette]
         means = np.array(means)
         marker = local_plt_markers[fodo_ix]
-        plt.plot(noise_pallette * 1e3, means * 1e3, '-' + marker, label=f'FODO-QE-ix {fodo_mapping[fodo_ix]}')
+        plt.plot(noise_pallette * 1e3 if benchmark_type == 'quad_tilt' else noise_pallette * 1e6, means * 1e6, '-' + marker, label=f'FODO-QE-ix {fodo_mapping[fodo_ix]}')
 
+    # Set labels based on benchmark type
+    if benchmark_type == 'bpm_shift':
+        x_shift = benchmark_info.get('x_shift', False)
+        y_shift = benchmark_info.get('y_shift', False)
+        axes_str = ""
+        if x_shift and y_shift:
+            axes_str = "X and Y axes"
+        elif x_shift:
+            axes_str = "X-axis"
+        elif y_shift:
+            axes_str = "Y-axis"
+        
+        xlabel = f'BPM Shift Level (µm) on {axes_str}'
+        title = f'Model Prediction Accuracy vs BPM Shift Level\n' \
+                f'Shift range: [{noise_range[0]*1e6:.1f}, {noise_range[1]*1e6:.1f}]µm, bins: {bins}\n' \
+                f'Axes: {axes_str}\n' \
+                f'MisAlign error: {not cancel_misalign_error}, Tilt errors: {not cancel_tilt_error}'
+        save_name = f"plot_accuracy_benchmark_bpm_shift_{'XY' if (x_shift and y_shift) else ('X' if x_shift else 'Y')}.eps"
+    elif benchmark_type == 'quad_tilt':
+        xlabel = 'Noise Level (millirad)'
+        title = f'Model Prediction Accuracy vs Quad Tilt Noise Level (noise_range: {noise_range}, bins: {bins})\n' \
+                f'MisAlign error: {not cancel_misalign_error}\nTilt errors: {not cancel_tilt_error}'
+        save_name = "plot_accuracy_benchmark_quad_tilt.eps"
+    else:  # bpm noise
+        xlabel = 'Noise Level (µm)'
+        title = f'Model Prediction Accuracy vs BPM Noise Level (noise_range: {noise_range}, bins: {bins})\n' \
+                f'MisAlign error: {not cancel_misalign_error}\nTilt errors: {not cancel_tilt_error}'
+        save_name = "plot_accuracy_benchmark_bpm_noise.eps"
     
-    plt.xlabel('Noise Level (µrad)', fontsize=18)
-    plt.ylabel(f'Mean Absolute Error (µrad)\nAveraging over {runs_per_noise} simulation runs\n', fontsize=18)
-    plt.title(f'Model Prediction Accuracy vs BPM Noise Level (noise_range: {noise_range}, bins: {bins})\nMisAlign error: {not cancel_misalign_error}\nTilt errors: {not cancel_tilt_error}', fontsize=18)
+    ylabel = f'Mean Absolute Error (µm)\nAveraging over {runs_per_noise} simulation runs\n'
+    
+    plt.xlabel(xlabel, fontsize=18)
+    plt.ylabel(ylabel, fontsize=18)
+    plt.title(title, fontsize=16)
     plt.legend(fontsize=14)
     plt.grid(True)
-    # plt.minorticks_on()
-    plt.xticks(noise_pallette * 1e3, fontsize=14, rotation=-45)
+    plt.xticks(noise_pallette * 1e6, fontsize=14, rotation=-45)
     plt.yticks(fontsize=14)
     plt.rc('font', size=14)
 
-    
     # Create inset axes
     ax_main = plt.gca()
     ax_inset = inset_axes(ax_main, width="30%", height="10%", loc='lower right', borderpad=2.5)
 
-    # Extract MAE for noise_level=0.0
-    noise_zero_key = 0.0  # Adjust if noise levels are stored as floats
+    # Extract MAE for noise_level=0.0 (or closest to zero for bpm_shift)
+    noise_zero_key = min(noise_pallette, key=lambda x: abs(x))  # Find closest to zero
     if noise_zero_key in mean_errors:
         mae_zero = [mean_errors[noise_zero_key].get(fodo_ix, 0) * 1e6 for fodo_ix in fodo_indices]
         fodo_labels = [f'{fodo_mapping[fodo_ix]}' for fodo_ix in fodo_indices]
-        fodo_labels_int = [fodo_mapping[fodo_ix] for fodo_ix in fodo_indices]
-
-        # Plotting the inset bar chart
-        ax_inset.bar(fodo_labels, mae_zero, color='skyblue', edgecolor='black')
 
         bars = ax_inset.bar(fodo_labels, mae_zero, color='skyblue', edgecolor='black')
 
@@ -248,26 +272,22 @@ def plot_benchmark_stats(stats, benchmark_info):
         for bar in bars:
             height = bar.get_height()
             ax_inset.text(
-                bar.get_x() + bar.get_width() / 2.,  # X-coordinate: center of the bar
-                height - 0.015,                              # Y-coordinate: top of the bar
-                f'{height:.2f}',                     # Text: MAE value with 3 decimals
-                ha='center',                         # Horizontal alignment
-                va='baseline',                         # Vertical alignment
+                bar.get_x() + bar.get_width() / 2.,
+                height - 0.015,
+                f'{height:.2f}',
+                ha='center',
+                va='baseline',
                 fontsize=11,
                 color='black'
             )
         
-        # ax_inset.plot(fodo_labels_int, mae_zero, 's')
-        # ax_inset.plot(np.array(fodo_labels_int), np.array(mae_zero), '-')
-        ax_inset.set_title('MAE at Noise=0', fontsize=11)
-        ax_inset.set_ylabel('MAE (µrad)', fontsize=11)
+        ax_inset.set_title(f'MAE at Shift≈0' if benchmark_type == 'bpm_shift' else 'MAE at Noise=0', fontsize=11)
+        ax_inset.set_ylabel('MAE (µm)', fontsize=11)
         ax_inset.set_xlabel('FODO Index', fontsize=11)
         ax_inset.tick_params(axis='both', which='major', labelsize=11)
-        # plt.yticks(mae_zero)
-        # plt.xticks(fodo_labels_int)
         ax_inset.grid(True, linestyle='--', linewidth=0.5, alpha=0.7)
         
-    plt.savefig(f"{SAVE_DIR_FIGS}/plot_accuracy_benchmark_with_MisAlign_and_Tilt_error_in_data_1.eps", bbox_inches = 'tight', format='eps')
+    plt.savefig(f"{SAVE_DIR_FIGS}/{save_name}", bbox_inches='tight', format='eps')
     plt.show()
     
 

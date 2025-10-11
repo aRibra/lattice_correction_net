@@ -33,11 +33,11 @@ if __name__ == '__main__':
                         help='Prepare data for training.')
     parser.add_argument('--train', action='store_true', default=False,
                         help='Run training.')
-    parser.add_argument('--load-checkpoint', action='store_true', default=True,
+    parser.add_argument('--load-checkpoint', action='store_true', default=False,
                         help='Load model checkpoint for evaluation.')
-    parser.add_argument('--evaluate', action='store_true', default=True,
+    parser.add_argument('--evaluate', action='store_true', default=False,
                         help='Run evaluation.')
-    parser.add_argument('--benchmark', action='store_true', default=True,
+    parser.add_argument('--benchmark', action='store_true', default=False,
                         help='Run benchmark.')
     parser.add_argument('--n-simulations', type=int, default=1000,
                         help='Number of simulations to generate.')
@@ -46,7 +46,7 @@ if __name__ == '__main__':
     parser.add_argument('--model-train-dir', type=str,
                         default='exps/exp_LSTM_2000_mix/GOLDEN_run_2025-01-17_00-19-35/training/train_2025-01-17_03-16-42',
                         help='Model training directory.')
-    parser.add_argument('--model-arch', type=str, default='LSTM',
+    parser.add_argument('--model-arch', type=str,
                         choices=[C.NET_ARCH_LSTM, C.NET_ARCH_SIMPLE_FULLY_CONNECTED, C.NET_ARCH_SIMPLE_CNN],
                         default=C.NET_ARCH_LSTM,
                         help='Model architecture to use.')
@@ -57,8 +57,22 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=16,
                         help='Batch size.')
     parser.add_argument('--benchmark-type', type=str, default='quad_tilt',
-                        choices=['bpm', 'quad_tilt'],
-                        help='Benchmark type.')
+                        choices=['bpm', 'quad_tilt', 'bpm_shift'],
+                        help='Benchmark type (bpm|quad_tilt|bpm_shift).')
+    parser.add_argument('--x-shift', action='store_true',
+                        help='Apply shifts on X-axis in BPM shift benchmark')
+    parser.add_argument('--y-shift', action='store_true',
+                        help='Apply shifts on Y-axis in BPM shift benchmark')
+    parser.add_argument('--shift-range', type=float, nargs=2, default=[-100e-6, 100e-6],
+                        help='Min/max BPM shift range in meters (default: ±100μm)')
+    parser.add_argument('--bpm-noise-range', type=float, nargs=2, default=[0, 100e-6],
+                        help='Min/max BPM noise range in meters for bpm benchmark (default: [0, 100μm])')
+    parser.add_argument('--quad-tilt-noise-range', type=float, nargs=2, default=[0.01, 0.05],
+                        help='Min/max quadrupole tilt noise range in mrads for quad_tilt benchmark (default: [0.01, 0.05] mrads)')
+    parser.add_argument('--bins', type=int, default=11,
+                        help='Number of bins for noise/shift levels in benchmarks (default: 11)')
+    parser.add_argument('--runs', type=int, default=50,
+                        help='Number of runs per noise/shift level in benchmarks (default: 50)')
     args = parser.parse_args()
     
     # Override mode flags and related parameters with command line arguments
@@ -135,6 +149,7 @@ if __name__ == '__main__':
     # -------------------------------
     # Prepare data for training
     # -------------------------------
+    val_loader = None
     if RUN_TRAINING or PREPARE_DATA:
         PREPARE_DATA = True
         batch_size = args.batch_size
@@ -182,7 +197,7 @@ if __name__ == '__main__':
     # -------------------------------
     # Run Inference on Validation Data
     # -------------------------------
-    if PREPARE_DATA:
+    if RUN_EVALUATION and PREPARE_DATA:
         inference_on_validation_data(model=model, 
                                  val_loader=val_loader,
                                  dataset_scalers=sim_data[C.DATA_KEY_DATASET_SCALERS],
@@ -191,10 +206,23 @@ if __name__ == '__main__':
     # -------------------------------
     # Evaluate model
     # -------------------------------
-    if RUN_EVALUATION:
-        BENCHMARK_TYPE = args.benchmark_type  # 'quad_tilt' # 'bpm' | 'quad_tilt''
-        main_evaluation_block(model, data_sub_cfg, benchmark_type=BENCHMARK_TYPE, run_benchmark=RUN_BENCHMARK)
-
+    if RUN_BENCHMARK:
+        BENCHMARK_TYPE = args.benchmark_type
+        main_evaluation_block(
+            model,
+            data_sub_cfg,
+            val_loader=val_loader,
+            benchmark_type=BENCHMARK_TYPE,
+            run_benchmark=RUN_BENCHMARK,
+            bpm_noise_range=args.bpm_noise_range,
+            quad_tilt_noise_range=args.quad_tilt_noise_range,
+            shift_range=args.shift_range,
+            bins=args.bins,
+            runs=args.runs,
+            x_shift=args.x_shift,
+            y_shift=args.y_shift
+        )
+        
     print("Done.")
     
     # -------------------------------
