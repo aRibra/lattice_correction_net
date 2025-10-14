@@ -89,17 +89,28 @@ if __name__ == '__main__':
 
     if GENERATE_DATA and LOAD_DATA:
         raise Exception("Cannot `GENERATE_DATA` and `LOAD_DATA` at the same time. Choose one.")
-    
+
+    if GENERATE_DATA:
+        sim_data = gen_data(n_simulations=N_SIMULATIONS)
+        print("Data generated. Exiting.")
+        exit()
+
+    if LOAD_DATA:
+        sim_data = load_data_from_dir(DATA_DIR)
+        if not RUN_TRAINING:
+            print("Data loaded. Exiting.")
+            exit()
+
     if not GENERATE_DATA and not LOAD_DATA and not LOAD_CHECKPOINT:
         raise Exception("To train model choose either `GENERATE_DATA` or `LOAD_DATA`\n\t"
                         "or, choose `LOAD_CHECKPOINT` to load checkpoint and evaluate te model.")
-    
+
     if RUN_TRAINING and LOAD_CHECKPOINT:
         raise Exception("Cannot `RUN_TRAINING` and `LOAD_CHECKPOINT` at the same time. Choose one.")
-    
+
     if not RUN_TRAINING and not LOAD_CHECKPOINT:
         raise Exception("Choose either `RUN_TRAINING` or `LOAD_CHECKPOINT`.")
-    
+
     if not GENERATE_DATA and not LOAD_DATA:
         print("[WARNING]: No data will be loaded or generated for training.")
         PREPARE_DATA = False
