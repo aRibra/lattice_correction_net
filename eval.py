@@ -214,9 +214,7 @@ def evaluate_with_existing_data(model, val_loader, dataset_scalers, merged_confi
     predicted_deltas = {}
 
     for batch_inputs, batch_targets in val_loader:
-        batch_inputs = batch_inputs.to(device)
-        batch_targets = batch_targets.cpu().numpy()
-
+        
         # Apply systematic BPM shifts
         if noise_type == 'bpm_shift' and noise_level != 0:
             shift_axes = []
@@ -233,20 +231,37 @@ def evaluate_with_existing_data(model, val_loader, dataset_scalers, merged_confi
             if input_size == 1:
                 raise Exception("[evaluate_with_existing_data()] still does not support evaluating on single plane.")
             n_BPMs = input_size // 2  # Assuming 2 planes (x, y)
-            batch_inputs_reshaped = batch_inputs.reshape(batch_size, n_turns, n_BPMs, 2)
+            batch_inputs = batch_inputs.reshape(batch_size, n_turns, n_BPMs, 2)
 
             # Apply shifts
             for axis, plane_idx in [('x', 0), ('y', 1)]:
                 if axis in shift_axes:
-                    batch_inputs_reshaped[:, :, :, plane_idx] += noise_level
+                    batch_inputs[:, :, :, plane_idx] += noise_level
                     if verbose:
                         print(f"  Applied {noise_level*1e6:.1f}μm shift to {axis}-axis")
 
+            bpm_noise_level = 1e-6
+            batch_inputs[:, :, :, 0] = batch_inputs[:, :, :, 0] + \
+                np.random.normal(0, bpm_noise_level, batch_inputs[:, :, :, 0].shape)
+            batch_inputs[:, :, :, 1] = batch_inputs[:, :, :, 1] + \
+                np.random.normal(0, bpm_noise_level, batch_inputs[:, :, :, 1].shape)
+
+
             # Reshape back to (batch_size, n_turns, input_size)
-            batch_inputs = batch_inputs_reshaped.reshape(batch_size, n_turns, input_size)
+            batch_inputs = batch_inputs.reshape(batch_size, n_turns, input_size)
+
+        # if noise_type == 'bpm' and noise_level > 0:
+        # if verbose:
+            # print(f"Applying random noise to BPM readings in X and Y axis with std={noise_level}.")
+
+        # if noise_type == 'bpm' and noise_level > 0:
+            # if verbose:
+                # print(f"Applying random noise to BPM readings in X and Y axis with std={noise_level}.")
+
 
         # Perform inference
         with torch.no_grad():
+            batch_inputs = batch_inputs.to(device)
             predicted_errors = model(batch_inputs)
         predicted_errors = predicted_errors.cpu().numpy()
 
@@ -410,31 +425,31 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
 
     merged_config = {**common_parameters, **eval_config}
 
-    # BPM Random Noise handling
-    if noise_type == 'bpm' and noise_level > 0:
-        if verbose:
-            print(f"Applying random noise to BPM readings in X and Y axis ±{noise_level}.")
-        simulator_with_error.bpm_readings['x'] = simulator_with_error.bpm_readings['x'] + \
-            np.random.uniform(-noise_level, noise_level, simulator_with_error.bpm_readings['x'].shape)
-        simulator_with_error.bpm_readings['y'] = simulator_with_error.bpm_readings['y'] + \
-            np.random.uniform(-noise_level, noise_level, simulator_with_error.bpm_readings['y'].shape)
+    # # BPM Random Noise handling
+    # if noise_type == 'bpm' and noise_level > 0:
+    #     if verbose:
+    #         print(f"Applying random noise to BPM readings in X and Y axis ±{noise_level}.")
+    #     simulator_with_error.bpm_readings['x'] = simulator_with_error.bpm_readings['x'] + \
+    #         np.random.uniform(-noise_level, noise_level, simulator_with_error.bpm_readings['x'].shape)
+    #     simulator_with_error.bpm_readings['y'] = simulator_with_error.bpm_readings['y'] + \
+    #         np.random.uniform(-noise_level, noise_level, simulator_with_error.bpm_readings['y'].shape)
     
-    # BPM Systematic Shift handling
-    if noise_type == 'bpm_shift' and noise_level != 0:
-        shift_axes = []
-        if x_shift:
-            shift_axes.append('x')
-        if y_shift:
-            shift_axes.append('y')
+    # # BPM Systematic Shift handling
+    # if noise_type == 'bpm_shift' and noise_level != 0:
+    #     shift_axes = []
+    #     if x_shift:
+    #         shift_axes.append('x')
+    #     if y_shift:
+    #         shift_axes.append('y')
             
-        if verbose:
-            print(f"Applying systematic shift of {noise_level*1e6:.1f}μm to BPM readings on axes: {shift_axes}")
+    #     if verbose:
+    #         print(f"Applying systematic shift of {noise_level*1e6:.1f}μm to BPM readings on axes: {shift_axes}")
         
-        for axis in shift_axes:
-            if axis in simulator_with_error.bpm_readings:
-                simulator_with_error.bpm_readings[axis] = simulator_with_error.bpm_readings[axis] + noise_level
-                if verbose:
-                    print(f"  Applied {noise_level*1e6:.1f}μm shift to {axis}-axis")    
+    #     for axis in shift_axes:
+    #         if axis in simulator_with_error.bpm_readings:
+    #             simulator_with_error.bpm_readings[axis] = simulator_with_error.bpm_readings[axis] + noise_level
+    #             if verbose:
+    #                 print(f"  Applied {noise_level*1e6:.1f}μm shift to {axis}-axis")    
 
     # Create SimulationDataset instance
     simulation_dataset = SimulationDataset(
@@ -469,7 +484,9 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
      error_values_dipole_tilt) = simulation_dataset.generate_data(
         start_rev, end_rev, fodo_cell_indices, planes
     )
-     
+
+    print("-------------------target_tensor: ", target_tensor)
+
     torch.save(input_tensor, "notebooks/input_tensor_eval.pt")
 
     # Reshape input data to match model input
@@ -477,11 +494,8 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
     input_size = n_BPMs * n_planes
     input_data = input_tensor.reshape(n_samples, n_turns, input_size)
 
-    # **Reshape input data back to (n_samples, n_turns, n_BPMs, n_planes)**
-    input_data_reshaped = input_data.reshape(n_samples, n_turns, n_BPMs, n_planes)
-
     # **Reshape to (-1, n_planes) for scaling**
-    input_data_flat = input_data_reshaped.reshape(-1, n_planes)  # Shape: (n_samples * n_turns * n_BPMs, n_planes)
+    input_data_flat = input_data.reshape(n_samples * n_turns * n_BPMs, n_planes)  # Shape: (n_samples * n_turns * n_BPMs, n_planes)
 
     # **Use the input scaler to transform the input data**
     input_data_flat_scaled = dataset_scalers['input_scaler'].transform(input_data_flat)
@@ -514,7 +528,7 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
     
     actual_deltas = {}
     predicted_deltas = {}
-    
+
     for pesv_ix, pesv in enumerate(predicted_errors_values_transformed_back):
         predicted_error_value = pesv
         predicted_deltas[pesv_ix] = predicted_error_value
@@ -784,6 +798,11 @@ def main_evaluation_block(model, data_sub_cfg, val_loader=None, benchmark_type=N
     '''
     
     merged_config = data_sub_cfg['merged_config']
+    
+    print("\n."*10)
+    print(merged_config)
+    print("\n."*10)
+    
     input_scaler_config = data_sub_cfg['input_scaler_config']
     target_scaler_config = data_sub_cfg['target_scaler_config']
     overridden_base_config = data_sub_cfg['overridden_base_config']

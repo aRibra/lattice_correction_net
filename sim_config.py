@@ -134,7 +134,7 @@ common_parameters = {
     'G': 1.0,                         # Tesla/meter
     'q': 1.602e-19,                   # Proton charge in Coulombs
     'n_turns': 6000,                   # Number of revolutions to simulate
-    'num_particles': 5,             # Number of particles to simulate
+    'num_particles': 10000,             # Number of particles to simulate
     'window_size': 10,                # Average window size for moving averages
     'use_thin_lens': True,
     # Uniform - Initial conditions ranges as tuples
@@ -167,8 +167,8 @@ common_parameters = {
     # Parameters for generate_data
     'target_data': 'quad_misalign_deltas',  # ['quad_misalign_deltas', 'quad_tilt_angles', 'dipole_tilt_angles']
     'reject_multiple_error_types': False,
-    'start_rev': 4500,
-    'end_rev': 5000, # should be same as <= n_turns
+    'start_rev': 5500,
+    'end_rev': 6000, # should be same as <= n_turns
     'apply_avg': True,
     'fodo_cell_indices': [0, 1, 2, 3, 4, 5, 6, 7],  # Indices of BPMs to consider
     'planes': ['x', 'y'],

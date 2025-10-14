@@ -38,7 +38,7 @@ def gen_data(n_simulations = 0):
     return load_data_from_dir(data_dir=data_dir)
 
 
-def load_data_from_dir(data_dir=None, override_config=True):
+def load_data_from_dir(data_dir=None, override_config=False):
     """Load data from a directory
     """
     if not os.path.exists(data_dir):
@@ -70,8 +70,9 @@ def load_data_from_dir(data_dir=None, override_config=True):
             merged_config = {**common_parameters, **base_configurations[0]}
             sim_data[C.DATA_KEY_MERGED_CONFIG] = merged_config
             base_configuration = base_configurations[0]
-            
-        sim_data[C.DATA_KEY_BASE_CONFIGURATION] = base_configuration
+            sim_data[C.DATA_KEY_BASE_CONFIGURATION] = base_configuration
+        else:
+            sim_data[C.DATA_KEY_BASE_CONFIGURATION] = base_configuration[0]
 
         # Override 'figs_save_dir' path with the new path if loading from disk
         sim_data[C.DATA_KEY_MERGED_CONFIG]['figs_save_dir'] = SAVE_DIR_FIGS
