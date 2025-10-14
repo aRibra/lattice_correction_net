@@ -150,6 +150,7 @@ if __name__ == '__main__':
     # Prepare data for training
     # -------------------------------
     val_loader = None
+    train_loader = None
     if RUN_TRAINING or PREPARE_DATA:
         PREPARE_DATA = True
         batch_size = args.batch_size
