@@ -1607,7 +1607,8 @@ class SynchrotronSimulator:
                 init_np[i,3] += y_co[1]
 
         for p_idx in range(nb_particles):
-            if self.verbose and (p_idx * self.n_turns) % ((nb_particles * self.n_turns) * debug_sim_rate) == 0 and debug_prcnt:
+            # self.verbose and
+            if (p_idx * self.n_turns) % ((nb_particles * self.n_turns) * debug_sim_rate) == 0 and debug_prcnt:
                 progress_prct = int(debug_prcnt.pop(0) * debug_sim_rate * 100)
                 print(f"\t {progress_prct}% ...")
 
@@ -1671,8 +1672,9 @@ class SynchrotronSimulator:
         d_bpm_xp = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
         d_bpm_yp = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
 
-        threads_per_block = 256
-        blocks_per_grid = max(1, (nb_particles + threads_per_block - 1)//threads_per_block)
+        threads_per_block = 512
+        blocks_per_grid = 512
+        # blocks_per_grid = max(1, (nb_particles + threads_per_block - 1)//threads_per_block)
 
         @cuda.jit
         def simulate_kernel_4D(d_states, d_M_elem, d_D_elem, len_per_cell, n_FODO, n_turns, 

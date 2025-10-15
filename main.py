@@ -25,37 +25,50 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="Main entry point for generate data >> train model >> evaluate >> benchmark."
     )
+    
+    # Generate new data
     parser.add_argument('--generate-data', action='store_true', default=False,
                         help='Generate data.')
-    parser.add_argument('--load-data', action='store_true', default=False,
-                        help='Load data from DATA_DIR.')
-    parser.add_argument('--prepare-data', action='store_true', default=False,
-                        help='Prepare data for training.')
-    parser.add_argument('--train', action='store_true', default=False,
-                        help='Run training.')
-    parser.add_argument('--load-checkpoint', action='store_true', default=False,
-                        help='Load model checkpoint for evaluation.')
-    parser.add_argument('--evaluate', action='store_true', default=False,
-                        help='Run evaluation.')
-    parser.add_argument('--benchmark', action='store_true', default=False,
-                        help='Run benchmark.')
     parser.add_argument('--n-simulations', type=int, default=1000,
                         help='Number of simulations to generate.')
+    
+    # Load data from disk
+    parser.add_argument('--load-data', action='store_true', default=False,
+                        help='Load data from DATA_DIR.')
     parser.add_argument('--data-dir', type=str, default='',
                         help='Data directory for loading data.')
+    
+
+    # Load checkpoint
+    parser.add_argument('--load-checkpoint', action='store_true', default=False,
+                        help='Load model checkpoint for evaluation.')
     parser.add_argument('--model-train-dir', type=str,
                         default='exps/exp_LSTM_2000_mix/GOLDEN_run_2025-01-17_00-19-35/training/train_2025-01-17_03-16-42',
                         help='Model training directory.')
+
+    # Train args
+    parser.add_argument('--train', action='store_true', default=False,
+                        help='Run training.')
     parser.add_argument('--model-arch', type=str,
                         choices=[C.NET_ARCH_LSTM, C.NET_ARCH_SIMPLE_FULLY_CONNECTED, C.NET_ARCH_SIMPLE_CNN],
                         default=C.NET_ARCH_LSTM,
                         help='Model architecture to use.')
     parser.add_argument('--num-epochs', type=int, default=900,
                         help='Number of training epochs.')
-    parser.add_argument('--test-size', type=float, default=0.10,
-                        help='Test size fraction.')
     parser.add_argument('--batch-size', type=int, default=16,
                         help='Batch size.')
+    parser.add_argument('--test-size', type=float, default=0.10,
+                        help='Test size fraction.')
+    
+    # Eval args
+    parser.add_argument('--prepare-data', action='store_true', default=False,
+                        help='Prepare data for training.')
+    parser.add_argument('--evaluate', action='store_true', default=False,
+                        help='Run evaluation.')
+
+    # Model benchmark args
+    parser.add_argument('--benchmark', action='store_true', default=False,
+                        help='Run benchmark.')
     parser.add_argument('--benchmark-type', type=str, default='quad_tilt',
                         choices=['bpm', 'quad_tilt', 'bpm_shift'],
                         help='Benchmark type (bpm|quad_tilt|bpm_shift).')
@@ -73,6 +86,7 @@ if __name__ == '__main__':
                         help='Number of bins for noise/shift levels in benchmarks (default: 11)')
     parser.add_argument('--runs', type=int, default=50,
                         help='Number of runs per noise/shift level in benchmarks (default: 50)')
+    
     args = parser.parse_args()
     
     # Override mode flags and related parameters with command line arguments
@@ -87,6 +101,12 @@ if __name__ == '__main__':
     DATA_DIR = args.data_dir
     MODEL_TRAIN_DIR = args.model_train_dir
 
+    # -------------------------------
+    # Generate or Load data from directory
+    # -------------------------------
+    sim_data = None
+    data_sub_cfg = None
+    
     if GENERATE_DATA and LOAD_DATA:
         raise Exception("Cannot `GENERATE_DATA` and `LOAD_DATA` at the same time. Choose one.")
 
@@ -97,7 +117,7 @@ if __name__ == '__main__':
 
     if LOAD_DATA:
         sim_data = load_data_from_dir(DATA_DIR)
-        if not RUN_TRAINING:
+        if not RUN_TRAINING and not RUN_EVALUATION:
             print("Data loaded. Exiting.")
             exit()
 
@@ -116,11 +136,6 @@ if __name__ == '__main__':
         PREPARE_DATA = False
         
     
-    # -------------------------------
-    # Generate or Load data from directory
-    # -------------------------------
-    sim_data = None
-    data_sub_cfg = None
     
     # DATA_DIR = 'data/Sim3000_2000turns_10parts_FODOErr-123457-126-017_avgTrue_tgtquad_misalign_deltas_2'
     # DATA_DIR = 'data/Sim1000_2000turns_10parts_FODOErr-123457--_avgTrue_tgtquad_misalign_deltas_1'
@@ -204,7 +219,8 @@ if __name__ == '__main__':
         num_epochs = args.num_epochs
         train_results = train_model(model, train_loader, val_loader, device, data_sub_cfg, num_epochs=num_epochs)
         print_maes_micron(train_results['val_maes'], sim_data[C.DATA_KEY_DATASET_SCALERS][C.DATA_KEY_TARGET_SCALER])
-
+        print("Training completed. Exiting.")
+        exit()
 
     # -------------------------------
     # Run Inference on Validation Data

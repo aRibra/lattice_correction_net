@@ -1,0 +1,392 @@
+{
+    "data_shapes": {
+        "inputs_shape": [
+            1800,
+            101,
+            16
+        ],
+        "targets_shape": [
+            1800,
+            6
+        ],
+        "raw_input_tensors_shape": [
+            2000,
+            101,
+            8,
+            2
+        ]
+    },
+    "data_sub_cfg": {
+        "merged_config": {
+            "p": 5.344286e-19,
+            "G": 1.0,
+            "q": 1.602e-19,
+            "n_turns": 6000,
+            "num_particles": 20,
+            "window_size": 10,
+            "use_thin_lens": true,
+            "x0_mean_std": [
+                0.0,
+                0.05
+            ],
+            "xp0_mean_std": [
+                0.0,
+                0.0
+            ],
+            "y0_mean_std": [
+                0.0,
+                0.05
+            ],
+            "yp0_mean_std": [
+                0.0,
+                0.0
+            ],
+            "particles_sampling_method": "from_twiss_params",
+            "correct_injection_offset": false,
+            "sampling_circle_radius": 0.01,
+            "mag_field_range": [
+                0.1,
+                2.0
+            ],
+            "dipole_length_range": [
+                0.2,
+                14.0
+            ],
+            "horizontal_tune_range": [
+                0.1,
+                0.8
+            ],
+            "vertical_tune_range": [
+                0.1,
+                0.8
+            ],
+            "total_dipole_bending_angle_range": [
+                4.71238898038469,
+                6.283185307179586
+            ],
+            "use_gpu": true,
+            "verbose": true,
+            "figs_save_dir": "exps/test/run_2025-10-15_11-48-11/figs",
+            "target_data": "quad_misalign_deltas",
+            "reject_multiple_error_types": false,
+            "start_rev": 5500,
+            "end_rev": 6000,
+            "apply_avg": true,
+            "fodo_cell_indices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+            ],
+            "planes": [
+                "x",
+                "y"
+            ],
+            "random_criterion": "normal",
+            "delta_range": [
+                0,
+                5e-05
+            ],
+            "quad_tilt_angle_range": [
+                0,
+                0.01
+            ],
+            "dipole_tilt_angle_range": [
+                0,
+                0.05
+            ],
+            "com_delta_range": [
+                -5e-05,
+                5e-05
+            ],
+            "config_name": "Configuration 1",
+            "design_radius": 20.0,
+            "n_FODO": 8,
+            "f": 3.336008739076155,
+            "L_quad": 0.4,
+            "quad_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "delta": -5.155327791892205e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 2,
+                    "quad_type": "defocusing",
+                    "delta": -8.19655679833852e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "delta": 6.73230777426882e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 4,
+                    "quad_type": "defocusing",
+                    "delta": -4.073461972900956e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 5,
+                    "quad_type": "defocusing",
+                    "delta": -3.778598272897297e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 7,
+                    "quad_type": "defocusing",
+                    "delta": -9.943366177596273e-07,
+                    "plane": "vertical"
+                }
+            ],
+            "quad_tilt_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.00421480533298954
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "tilt_angle": 0.017174061593180356
+                },
+                {
+                    "FODO_index": 6,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.005113544228978013
+                }
+            ],
+            "dipole_tilt_errors": null,
+            "L_straight": 3.9269908169872423,
+            "L_dipole": 5.890486225480862,
+            "n_Dipoles": 16,
+            "L_drift": 0.7817477042468106,
+            "Qx": 0.17971989927789359,
+            "Qy": 0.4677523855413338,
+            "B": 0.16680043695380775,
+            "B_rho": 3.336008739076155,
+            "total_dipole_bending_angle": 4.71238898038469
+        },
+        "input_scaler_config": {
+            "min_": [
+                0.1856538224334574,
+                0.03548441174074757
+            ],
+            "scale_": [
+                21774.51418544592,
+                1545.493395911599
+            ],
+            "data_min_": [
+                -5.4451447795145214e-05,
+                -0.0006700024823658168
+            ],
+            "data_max_": [
+                3.7399051507236436e-05,
+                0.0006240826332941651
+            ],
+            "data_range_": [
+                9.185049930238165e-05,
+                0.001294085115659982
+            ],
+            "feature_range": [
+                -1,
+                1
+            ]
+        },
+        "target_scaler_config": {
+            "min_": [
+                0.0010987489929976668,
+                -0.01864861843525467,
+                0.0237582415840889,
+                0.03919945401426239,
+                -0.044968206174757164,
+                0.08604783097571955
+            ],
+            "scale_": [
+                5839.104157682844,
+                6020.470169359428,
+                5286.697978538089,
+                6637.392830788465,
+                6049.046302844394,
+                6162.804816422888
+            ],
+            "data_min_": [
+                -0.00017144731828011572,
+                -0.00016300244897138327,
+                -0.00019364795298315585,
+                -0.0001565674174344167,
+                -0.0001578813826199621,
+                -0.0001762262254487723
+            ],
+            "data_max_": [
+                0.0001710709766484797,
+                0.00016919751942623407,
+                0.00018466002075001597,
+                0.0001447557151550427,
+                0.00017274924903176725,
+                0.00014830133295617998
+            ],
+            "data_range_": [
+                0.0003425182949285954,
+                0.00033219996839761734,
+                0.0003783079737331718,
+                0.0003013231325894594,
+                0.00033063063165172935,
+                0.0003245275584049523
+            ],
+            "feature_range": [
+                -1,
+                1
+            ]
+        },
+        "overridden_base_config": {
+            "config_name": "Configuration 1",
+            "design_radius": 20.0,
+            "n_FODO": 8,
+            "f": 3.336008739076155,
+            "L_quad": 0.4,
+            "quad_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "delta": -5.155327791892205e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 2,
+                    "quad_type": "defocusing",
+                    "delta": -8.19655679833852e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "delta": 6.73230777426882e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 4,
+                    "quad_type": "defocusing",
+                    "delta": -4.073461972900956e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 5,
+                    "quad_type": "defocusing",
+                    "delta": -3.778598272897297e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 7,
+                    "quad_type": "defocusing",
+                    "delta": -9.943366177596273e-07,
+                    "plane": "vertical"
+                }
+            ],
+            "quad_tilt_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.00421480533298954
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "tilt_angle": 0.017174061593180356
+                },
+                {
+                    "FODO_index": 6,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.005113544228978013
+                }
+            ],
+            "dipole_tilt_errors": null,
+            "L_straight": 3.9269908169872423,
+            "L_dipole": 5.890486225480862,
+            "n_Dipoles": 16,
+            "L_drift": 0.7817477042468106,
+            "Qx": 0.17971989927789359,
+            "Qy": 0.4677523855413338,
+            "B": 0.16680043695380775,
+            "B_rho": 3.336008739076155,
+            "G": 1.0,
+            "p": 5.344286e-19,
+            "q": 1.602e-19,
+            "total_dipole_bending_angle": 4.71238898038469,
+            "figs_save_dir": "exps/test/run_2025-10-15_11-48-11/figs"
+        }
+    },
+    "data_sizes": {
+        "train_batch_size": 32,
+        "validation_batch_size": 32,
+        "train_dataset_size": 1800,
+        "validation_dataset_size": 200
+    },
+    "network_topology": {
+        "input_shape": [
+            -1,
+            101,
+            16
+        ],
+        "output_shape": [
+            -1,
+            6
+        ]
+    },
+    "training_parameters": {
+        "num_epochs": 900,
+        "batch_size": 32,
+        "optimizer": "Adam",
+        "learning_rate": 0.001,
+        "criterion": "MSELoss",
+        "scheduler": "CyclicLR"
+    },
+    "device": "cuda",
+    "random_seed": 3057191601642387033,
+    "timestamp": "2025-10-15_11-48-16",
+    "model_type": "QuadErrorCorrectionLSTM",
+    "model_parameters": {
+        "input_size": 16,
+        "hidden_size": 256,
+        "num_layers": 1,
+        "output_size": null,
+        "is_bidirectional": true
+    },
+    "optimizer_type": "Adam",
+    "optimizer_params": {
+        "lr": 0.001,
+        "betas": [
+            0.9,
+            0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": 0,
+        "amsgrad": false,
+        "maximize": false,
+        "foreach": null,
+        "capturable": false,
+        "differentiable": false,
+        "fused": null
+    },
+    "scheduler_type": "CyclicLR",
+    "scheduler_params": {
+        "base_lr": 1e-10,
+        "max_lr": 0.001,
+        "mode": "triangular2",
+        "cycle_momentum": true,
+        "base_momentum": 0.8,
+        "max_momentum": 0.9
+    },
+    "criterion_type": "MSELoss",
+    "training_hyperparameters": {
+        "num_epochs": 900,
+        "nb_epoch_log": 10
+    }
+}
