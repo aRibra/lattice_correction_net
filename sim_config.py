@@ -133,7 +133,7 @@ common_parameters = {
     'p': 5.344286e-19,                # Momentum in kg m/s (p_GeV_c=0.7)
     'G': 1.0,                         # Tesla/meter
     'q': 1.602e-19,                   # Proton charge in Coulombs
-    'n_turns': 6000,                   # Number of revolutions to simulate
+    'n_turns': 600,                   # Number of revolutions to simulate
     'num_particles': 20,             # Number of particles to simulate
     'window_size': 10,                # Average window size for moving averages
     'use_thin_lens': True,
@@ -154,7 +154,7 @@ common_parameters = {
     # Use cuda GPU kernels to accelerate simulation
     'use_gpu': True,
     # Log
-    'verbose': True,
+    'verbose': False,
     # BPM readings log criterion
     # record_full_revolution. By default records for cell_idx=0
     # 'record_full_revolution': False,
@@ -167,8 +167,8 @@ common_parameters = {
     # Parameters for generate_data
     'target_data': 'quad_misalign_deltas',  # ['quad_misalign_deltas', 'quad_tilt_angles', 'dipole_tilt_angles']
     'reject_multiple_error_types': False,
-    'start_rev': 5500,
-    'end_rev': 6000, # should be same as <= n_turns
+    'start_rev': 499,
+    'end_rev': 600, # should be same as <= n_turns
     'apply_avg': True,
     'fodo_cell_indices': [0, 1, 2, 3, 4, 5, 6, 7],  # Indices of BPMs to consider
     'planes': ['x', 'y'],
