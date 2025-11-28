@@ -43,6 +43,7 @@ class SimulationDataset:
         self.quadrupole_tilt_errors = quadrupole_tilt_errors
         self.dipole_tilt_errors = dipole_tilt_errors
         self.lattice_reference = lattice_reference
+        self.lattice_reference.describe()
         self.apply_avg = apply_avg
 
     def generate_data(self, start_rev, end_rev, fodo_cell_indices, planes, include_no_error_data=False):
@@ -64,6 +65,8 @@ class SimulationDataset:
             error_values_quad_tilt (torch.Tensor): Quadrupole tilt angle error(s).
             error_values_dipole_tilt (torch.Tensor): Dipole tilt angle error(s).
         """
+
+        print(f"--\n------\n---------------------------------------- include_no_error_data={include_no_error_data}")
 
         errors_list_quad_mis_align = []
         errors_list_quad_tilt_angles = []
@@ -393,9 +396,9 @@ class DataAutomation:
                 raise Exception("Defining multiple error types is not currently supported "
                                 "in data automation phase. Please define only one type"
                                 f"The defined errors in config are: {errors_cfg_state}")
-            elif len_defined_errors == 0:
-                raise ValueError("None of [`quad_errors`|`quad_tilt_errors`|`dipole_tilt_errors`] "
-                                 "was defined in the current configuration.")
+            # elif len_defined_errors == 0:
+            #     raise ValueError("None of [`quad_errors`|`quad_tilt_errors`|`dipole_tilt_errors`] "
+            #                      "was defined in the current configuration.")
 
             sampling_func = None
             if self.common_parameters['random_criterion'] == 'uniform':
@@ -432,6 +435,18 @@ class DataAutomation:
 
                 simulator_no_error = runner.simulators_no_error.get(config_key_no_error)
                 simulator_with_error = runner.simulators_with_error.get(config_key_with_error)
+                
+                print("sim no error tunes:")
+                simulator_no_error.compute_tunes()
+                
+                print("sim with error tunes:")
+                simulator_with_error.compute_tunes()
+
+                print("sim no error compute_tune_from_cell:")
+                simulator_no_error.compute_tune_from_cell()
+                
+                print("sim with error compute_tune_from_cell:")
+                simulator_with_error.compute_tune_from_cell()
 
                 if simulator_no_error and simulator_with_error:
                     delta_x, delta_y = self.compute_com_deltas(simulator_no_error, simulator_with_error)

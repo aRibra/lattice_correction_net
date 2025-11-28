@@ -31,7 +31,7 @@ def gen_data(n_simulations = 0):
     
     # Run the data automation process and get the data tensors
     data_automation.run(
-        include_no_error_data=False, 
+        include_no_error_data=common_parameters['include_no_error_data'], 
         skip_data_on_delta_ranges=False)
     
     data_dir = os.path.join(f'data/{data_tag}')
