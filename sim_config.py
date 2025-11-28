@@ -33,79 +33,88 @@ base_configurations = [
         'L_quad': 0.4,             # meters
         # 'L_straight': 1,         # meters
         # 'total_dipole_bending_angle': (2 * np.pi),#(3 / 3) * np.pi,
-        
+
         # 'quad_errors': None,
 
         'quad_errors': [
-            # {
-            #     'FODO_index': 0,
-            #     'quad_type': 'defocusing',
-            #     'delta': 1e-5,
-            #     'plane': 'vertical'  # 'horizontal' or 'vertical'
-            # },
             {
                 'FODO_index': 1,
                 'quad_type': 'defocusing',
-                'delta': 1e-6,
+                'delta': 0.0,
                 'plane': 'vertical'  # 'horizontal' or 'vertical'
-            },
-            {
-                'FODO_index': 2,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
-            },
-            {
-                'FODO_index': 3,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
-            },
-            {
-                'FODO_index': 4,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
-            },
-            {
-                'FODO_index': 5,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
-            },
-            # {
-            #     'FODO_index': 6,
-            #     'quad_type': 'defocusing',
-            #     'delta': 1e-7,
-            #     'plane': 'vertical'  # 'horizontal' or 'vertical'
-            # },
-            {
-                'FODO_index': 7,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
-            },
+            }
         ],
 
-        # "quad_tilt_errors": None,
+        # 'quad_errors': [
+        #     # {
+        #     #     'FODO_index': 0,
+        #     #     'quad_type': 'defocusing',
+        #     #     'delta': 1e-5,
+        #     #     'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     # },
+        #     {
+        #         'FODO_index': 1,
+        #         'quad_type': 'defocusing',
+        #         'delta': 1e-6,
+        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     },
+        #     {
+        #         'FODO_index': 2,
+        #         'quad_type': 'defocusing',
+        #         'delta': 1e-7,
+        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     },
+        #     {
+        #         'FODO_index': 3,
+        #         'quad_type': 'defocusing',
+        #         'delta': 1e-7,
+        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     },
+        #     {
+        #         'FODO_index': 4,
+        #         'quad_type': 'defocusing',
+        #         'delta': 1e-7,
+        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     },
+        #     {
+        #         'FODO_index': 5,
+        #         'quad_type': 'defocusing',
+        #         'delta': 1e-7,
+        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     },
+        #     # {
+        #     #     'FODO_index': 6,
+        #     #     'quad_type': 'defocusing',
+        #     #     'delta': 1e-7,
+        #     #     'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     # },
+        #     {
+        #         'FODO_index': 7,
+        #         'quad_type': 'defocusing',
+        #         'delta': 1e-7,
+        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
+        #     },
+        # ],
+
+        "quad_tilt_errors": None,
         
-        'quad_tilt_errors': [
-            {
-                'FODO_index': 1,
-                'quad_type': 'defocusing',
-                'tilt_angle': 0.0005
-            },
-            {
-                'FODO_index': 3,
-                'quad_type': 'defocusing',
-                'tilt_angle': 0.0005
-            },
-            {
-                'FODO_index': 6,
-                'quad_type': 'defocusing',
-                'tilt_angle': 0.0005
-            },   
-        ],
+        # 'quad_tilt_errors': [
+        #     {
+        #         'FODO_index': 1,
+        #         'quad_type': 'defocusing',
+        #         'tilt_angle': 0.0005
+        #     },
+        #     {
+        #         'FODO_index': 3,
+        #         'quad_type': 'defocusing',
+        #         'tilt_angle': 0.0005
+        #     },
+        #     {
+        #         'FODO_index': 6,
+        #         'quad_type': 'defocusing',
+        #         'tilt_angle': 0.0005
+        #     },   
+        # ],
 
         'dipole_tilt_errors': None,
         # 'dipole_tilt_errors': [
@@ -129,12 +138,14 @@ base_configurations = [
     },
 ]
 
+
+
 common_parameters = {
     'p': 5.344286e-19,                # Momentum in kg m/s (p_GeV_c=0.7)
     'G': 1.0,                         # Tesla/meter
     'q': 1.602e-19,                   # Proton charge in Coulombs
-    'n_turns': 600,                   # Number of revolutions to simulate
-    'num_particles': 20,             # Number of particles to simulate
+    'n_turns': 6000,                   # Number of revolutions to simulate
+    'num_particles': 5,             # Number of particles to simulate
     'window_size': 10,                # Average window size for moving averages
     'use_thin_lens': True,
     # Uniform - Initial conditions ranges as tuples
@@ -167,9 +178,10 @@ common_parameters = {
     # Parameters for generate_data
     'target_data': 'quad_misalign_deltas',  # ['quad_misalign_deltas', 'quad_tilt_angles', 'dipole_tilt_angles']
     'reject_multiple_error_types': False,
-    'start_rev': 499,
-    'end_rev': 600, # should be same as <= n_turns
-    'apply_avg': True,
+    'start_rev': 0,
+    'end_rev': 6000, # should be same as <= n_turns
+    'apply_avg': False,
+    'include_no_error_data': True,
     'fodo_cell_indices': [0, 1, 2, 3, 4, 5, 6, 7],  # Indices of BPMs to consider
     'planes': ['x', 'y'],
     'random_criterion': 'normal', # uniform | normal

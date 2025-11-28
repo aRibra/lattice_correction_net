@@ -387,6 +387,11 @@ class LatticeReference:
         # Lattice elements
         self.lattice_elements_positions = simulator.lattice_elements_positions
         self.lattice_elements_description = simulator.lattice_elements_description
+        
+        self.quad_errors = simulator.quad_errors
+        self.quadrupole_tilt_errors = simulator.quadrupole_tilt_errors
+        self.dipole_tilt_errors = simulator.dipole_tilt_errors
+        
 
         # BPM positions
         self.bpm_positions = simulator.bpm_positions
@@ -425,7 +430,7 @@ class LatticeReference:
         else:
             print("  Quadrupole Error: None")
             
-        if self.quad_tilt_errors:
+        if self.quadrupole_tilt_errors:
             for idx, error in enumerate(self.quad_tilt_errors):
                 print(f"  Quadrupole Tilt Error {idx+1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Tilt Angle = {error.tilt_angle} rad")    
         else:
@@ -1056,7 +1061,8 @@ class SynchrotronSimulator:
         # 1) Build the one-turn 4x4
         M_ring_4x4 = np.identity(4)
         for M_elem in self.M_lattice_4x4:
-            M_ring_4x4 = M_elem @ M_ring_4x4
+            # M_ring_4x4 = M_elem @ M_ring_4x4
+            M_ring_4x4 = M_ring_4x4 @ M_elem
 
         # 2) Extract horizontal sub-block Mx (2x2), vertical sub-block My (2x2)
         Mx = M_ring_4x4[0:2, 0:2]
@@ -1064,30 +1070,16 @@ class SynchrotronSimulator:
 
         # Helper function to compute (alpha, beta, gamma) from a 2x2 one-turn matrix
         def twiss_from_2x2(M2):
-            m11, m12 = M2[0,0], M2[0,1]
-            m21, m22 = M2[1,0], M2[1,1]
-            trace   = m11 + m22
-            cos_mu  = trace / 2.0
-
-            # Clip cos_mu to [-1, 1] for safety
-            if cos_mu < -1.0:
-                cos_mu = -1.0
-            elif cos_mu > 1.0:
-                cos_mu = 1.0
-
-            mu   = np.arccos(cos_mu)
-            # If sin(mu) is near zero => unstable or pi, handle carefully
+            m11, m12, m21, m22 = M2[0,0], M2[0,1], M2[1,0], M2[1,1]
+            cos_mu = np.clip((m11 + m22)/2, -1, 1)
+            mu = np.arccos(cos_mu)
+            if m21 > 0: mu = -mu
             sin_mu = np.sin(mu)
             if abs(sin_mu) < 1e-12:
-                # fallback
-                beta  = np.nan
-                alpha = np.nan
-                gamma = np.nan
-            else:
-                beta  = m12 / sin_mu
-                alpha = (m11 - m22) / (2.0*sin_mu)
-                gamma = (1.0 + alpha**2) / beta
-
+                return np.nan, np.nan, np.nan
+            beta  = m12 / sin_mu
+            alpha = (m11 - m22) / (2*sin_mu)
+            gamma = (1 + alpha**2) / beta
             return alpha, beta, gamma
 
         # 3) Compute horizontal Twiss
@@ -1441,6 +1433,8 @@ class SynchrotronSimulator:
             return (np.nan, np.nan)
         if angles[0] == 0 or  angles[1] == 0:
             raise Exception("Tunes are 0. Ring is unstable.")
+        
+        print(f"\t\t\t=========== angles = {angles}")
         return (angles[0], angles[1])
 
     def compute_tunes(self):
@@ -1452,7 +1446,8 @@ class SynchrotronSimulator:
 
         M_ring_4x4 = np.identity(4)
         for idx, M_elem in enumerate(self.M_lattice_4x4):
-            M_ring_4x4 = M_elem @ M_ring_4x4
+            # M_ring_4x4 = M_elem @ M_ring_4x4
+            M_ring_4x4 = M_ring_4x4 @ M_elem
         
         # print("One-turn 4x4 matrix =\n", M_ring_4x4)
         
@@ -1460,8 +1455,8 @@ class SynchrotronSimulator:
             Q1, Q2 = self.compute_tune_4x4(M_ring_4x4)
             if self.verbose:
                 print("compute_tune_4x4()/ ", Q1, Q2)
-            self.Qx = Q1
-            self.Qy = Q2
+            self.Qy = Q1
+            self.Qx = Q2
             self.mu_x = 2*np.pi*self.Qx
             self.mu_y = 2*np.pi*self.Qy
         except Exception as e:
@@ -1481,6 +1476,38 @@ class SynchrotronSimulator:
 
         self.turns_full_oscillation_x = self.compute_full_oscillation_turns(self.Qx)
         self.turns_full_oscillation_y = self.compute_full_oscillation_turns(self.Qy)
+
+    def compute_tune_from_cell(self):
+        """
+        Compute tunes using one FODO cell to avoid aliasing.
+        """
+        tunes = {}
+
+        # --- Build M_cell_4x4 ---
+        M_cell = np.identity(4)
+        for e in range(self.len_per_cell_list[0]):  # assume uniform FODO
+            M_cell = self.M_lattice_4x4[e] @ M_cell
+
+        # --- Extract planes ---
+        Mx = M_cell[:2, :2]
+        My = M_cell[2:, 2:]
+
+        # --- Compute phase advance per cell ---
+        mu_x = np.arccos(0.5 * (Mx[0, 0] + Mx[1, 1]))
+        mu_y = np.arccos(0.5 * (My[0, 0] + My[1, 1]))
+
+        # --- Total tune ---
+        tunes['Qx'] = (self.n_FODO * mu_x) / (2 * np.pi)
+        tunes['Qy'] = (self.n_FODO * mu_y) / (2 * np.pi)
+
+        # --- Compute and print beta functions ---
+        beta_x = Mx[0, 1] / np.sin(mu_x) if np.sin(mu_x) != 0 else np.inf
+        beta_y = My[0, 1] / np.sin(mu_y) if np.sin(mu_y) != 0 else np.inf
+
+        print(f"Beta_x = {beta_x:.6f}, Beta_y = {beta_y:.6f}")
+        print("tunes: ", tunes)
+
+        return tunes
 
 
     def compute_full_oscillation_turns(self, Q):
@@ -1508,8 +1535,10 @@ class SynchrotronSimulator:
         D_ring_4x1 = np.zeros(4, dtype=np.float64)
         
         for M_elem, D_elem in zip(self.M_lattice_4x4, self.D_lattice_4x1):
-            D_ring_4x1 = M_elem @ D_ring_4x1 + D_elem
-            M_ring_4x4 = M_elem @ M_ring_4x4
+            # D_ring_4x1 = M_elem @ D_ring_4x1 + D_elem
+            # M_ring_4x4 = M_elem @ M_ring_4x4
+            D_ring_4x1 = M_ring_4x4 @ D_ring_4x1 + D_elem
+            M_ring_4x4 = M_ring_4x4 @ M_elem
 
         I_minus_M = np.identity(4) - M_ring_4x4
         try:
@@ -1645,26 +1674,23 @@ class SynchrotronSimulator:
         init_np = np.array(initial_states, dtype=np.float64)
         if self.correct_injection_offset:
             for i in range(nb_particles):
-                init_np[i,0] += x_co[0]
-                init_np[i,1] += x_co[1]
-                init_np[i,2] += y_co[0]
-                init_np[i,3] += y_co[1]
+                init_np[i, 0] += x_co[0]
+                init_np[i, 1] += x_co[1]
+                init_np[i, 2] += y_co[0]
+                init_np[i, 3] += y_co[1]
 
         d_states = cuda.to_device(init_np)
 
         n_elements = len(self.M_lattice_4x4)
-        M_arr_4d = np.zeros((n_elements,4,4), dtype=np.float64)
-        D_arr_4d = np.zeros((n_elements,4),   dtype=np.float64)
-        
+        M_arr_4d = np.zeros((n_elements, 4, 4), dtype=np.float64)
+        D_arr_4d = np.zeros((n_elements, 4), dtype=np.float64)
+
         for eix in range(n_elements):
             M_arr_4d[eix] = self.M_lattice_4x4[eix]
-            # copy over the inhom vector
             D_arr_4d[eix] = self.D_lattice_4x1[eix]
-
 
         d_M_arr_4d = cuda.to_device(M_arr_4d)
         d_D_arr_4d = cuda.to_device(D_arr_4d)
-        
         d_len_per_cell = cuda.to_device(np.array(self.len_per_cell_list, dtype=np.int32))
 
         d_bpm_x  = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
@@ -1674,89 +1700,91 @@ class SynchrotronSimulator:
 
         threads_per_block = 512
         blocks_per_grid = 512
-        # blocks_per_grid = max(1, (nb_particles + threads_per_block - 1)//threads_per_block)
 
         @cuda.jit
-        def simulate_kernel_4D(d_states, d_M_elem, d_D_elem, len_per_cell, n_FODO, n_turns, 
+        def simulate_kernel_4D(d_states, d_M_elem, d_D_elem, len_per_cell, n_FODO, n_turns,
                             bpm_x, bpm_y, bpm_xp, bpm_yp):
             pid = cuda.grid(1)
             if pid >= d_states.shape[0]:
                 return
 
-            # local 4D
-            x0 = d_states[pid,0]
-            x1 = d_states[pid,1]
-            x2 = d_states[pid,2]
-            x3 = d_states[pid,3]
+            # local 4D state
+            x0 = d_states[pid, 0]
+            x1 = d_states[pid, 1]
+            x2 = d_states[pid, 2]
+            x3 = d_states[pid, 3]
 
             for turn in range(n_turns):
-                # elem_idx = 0
                 for cell_idx in range(n_FODO):
                     n_elems = len_per_cell[cell_idx]
+                    # precompute global base index
+                    global_base_idx = 0
+                    for i in range(cell_idx):
+                        global_base_idx += len_per_cell[i]
+
                     for elem_in_cell in range(n_elems):
-                        # Calculate the global element index using an explicit loop
-                        global_elem_idx = 0
-                        for i in range(cell_idx):
-                            global_elem_idx += len_per_cell[i]
-                        global_elem_idx += elem_in_cell  # Add the current element within the cell
-                        
-                        # multiply
-                        M00 = d_M_elem[global_elem_idx,0,0]
-                        M01 = d_M_elem[global_elem_idx,0,1]
-                        M02 = d_M_elem[global_elem_idx,0,2]
-                        M03 = d_M_elem[global_elem_idx,0,3]
-                        M10 = d_M_elem[global_elem_idx,1,0]
-                        M11 = d_M_elem[global_elem_idx,1,1]
-                        M12 = d_M_elem[global_elem_idx,1,2]
-                        M13 = d_M_elem[global_elem_idx,1,3]
-                        M20 = d_M_elem[global_elem_idx,2,0]
-                        M21 = d_M_elem[global_elem_idx,2,1]
-                        M22 = d_M_elem[global_elem_idx,2,2]
-                        M23 = d_M_elem[global_elem_idx,2,3]
-                        M30 = d_M_elem[global_elem_idx,3,0]
-                        M31 = d_M_elem[global_elem_idx,3,1]
-                        M32 = d_M_elem[global_elem_idx,3,2]
-                        M33 = d_M_elem[global_elem_idx,3,3]
+                        global_elem_idx = global_base_idx + elem_in_cell
 
-                        y0 = M00*x0 + M01*x1 + M02*x2 + M03*x3
-                        y1 = M10*x0 + M11*x1 + M12*x2 + M13*x3
-                        y2 = M20*x0 + M21*x1 + M22*x2 + M23*x3
-                        y3 = M30*x0 + M31*x1 + M32*x2 + M33*x3
+                        # Load M and D elements
+                        M00 = d_M_elem[global_elem_idx, 0, 0]
+                        M01 = d_M_elem[global_elem_idx, 0, 1]
+                        M02 = d_M_elem[global_elem_idx, 0, 2]
+                        M03 = d_M_elem[global_elem_idx, 0, 3]
+                        M10 = d_M_elem[global_elem_idx, 1, 0]
+                        M11 = d_M_elem[global_elem_idx, 1, 1]
+                        M12 = d_M_elem[global_elem_idx, 1, 2]
+                        M13 = d_M_elem[global_elem_idx, 1, 3]
+                        M20 = d_M_elem[global_elem_idx, 2, 0]
+                        M21 = d_M_elem[global_elem_idx, 2, 1]
+                        M22 = d_M_elem[global_elem_idx, 2, 2]
+                        M23 = d_M_elem[global_elem_idx, 2, 3]
+                        M30 = d_M_elem[global_elem_idx, 3, 0]
+                        M31 = d_M_elem[global_elem_idx, 3, 1]
+                        M32 = d_M_elem[global_elem_idx, 3, 2]
+                        M33 = d_M_elem[global_elem_idx, 3, 3]
 
-                        # add inhom vector
-                        D0 = d_D_elem[global_elem_idx,0]
-                        D1 = d_D_elem[global_elem_idx,1]
-                        D2 = d_D_elem[global_elem_idx,2]
-                        D3 = d_D_elem[global_elem_idx,3]
+                        # propagation order: X' = M @ X + D
+                        y0 = M00 * x0 + M01 * x1 + M02 * x2 + M03 * x3
+                        y1 = M10 * x0 + M11 * x1 + M12 * x2 + M13 * x3
+                        y2 = M20 * x0 + M21 * x1 + M22 * x2 + M23 * x3
+                        y3 = M30 * x0 + M31 * x1 + M32 * x2 + M33 * x3
+
+                        D0 = d_D_elem[global_elem_idx, 0]
+                        D1 = d_D_elem[global_elem_idx, 1]
+                        D2 = d_D_elem[global_elem_idx, 2]
+                        D3 = d_D_elem[global_elem_idx, 3]
 
                         x0 = y0 + D0
                         x1 = y1 + D1
                         x2 = y2 + D2
                         x3 = y3 + D3
-                        # elem_idx += 1
 
-                    # BPM
-                    bpm_x[pid,turn,cell_idx]  = x0
-                    bpm_y[pid,turn,cell_idx]  = x2
-                    bpm_xp[pid,turn,cell_idx] = x1
-                    bpm_yp[pid,turn,cell_idx] = x3
+                    # Record BPM readings
+                    bpm_x[pid, turn, cell_idx]  = x0
+                    bpm_y[pid, turn, cell_idx]  = x2
+                    bpm_xp[pid, turn, cell_idx] = x1
+                    bpm_yp[pid, turn, cell_idx] = x3
 
-            d_states[pid,0] = x0
-            d_states[pid,1] = x1
-            d_states[pid,2] = x2
-            d_states[pid,3] = x3
+            # Write back final state
+            d_states[pid, 0] = x0
+            d_states[pid, 1] = x1
+            d_states[pid, 2] = x2
+            d_states[pid, 3] = x3
 
+        # Launch kernel
         simulate_kernel_4D[blocks_per_grid, threads_per_block](
             d_states, d_M_arr_4d, d_D_arr_4d, d_len_per_cell, self.n_FODO, self.n_turns,
             d_bpm_x, d_bpm_y, d_bpm_xp, d_bpm_yp
         )
         cuda.synchronize()
 
+        # Copy back results
         final_states_gpu = d_states.copy_to_host()
         self.bpm_readings['x']  = d_bpm_x.copy_to_host()
         self.bpm_readings['y']  = d_bpm_y.copy_to_host()
         self.bpm_readings['xp'] = d_bpm_xp.copy_to_host()
         self.bpm_readings['yp'] = d_bpm_yp.copy_to_host()
+
 
     def calculate_beam_size(self):
         """Calculate beam size (RMS width and height) from BPM readings."""
