@@ -1655,7 +1655,7 @@ class SynchrotronSimulator:
                         # linear inhomogeneous transform
                         X_4d = M_4x4 @ X_4d + D_4x1
                         
-                        # elem_idx_global += 1
+                        # elem_idx_global += 1`
 
                     self.bpm_readings['x'][p_idx, turn, cell_index]  = X_4d[0]
                     self.bpm_readings['y'][p_idx, turn, cell_index]  = X_4d[2]
@@ -3762,8 +3762,10 @@ class SimulationRunner:
                         simulator_no_error.plot_bpm_comparison_last_images(simulator_no_error, simulator_with_error, cell_idx=cell_idx, particles='all_mean')
                         viz_start_idx = simulator_no_error.n_turns - 100
                         viz_end_idx = simulator_no_error.n_turns
-                        simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=viz_end_idx - 100,
-                                             viz_end_idx=viz_end_idx, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
+                        # simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=viz_end_idx - 100,
+                        #                      viz_end_idx=viz_end_idx, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
+                        simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=None,
+                                             viz_end_idx=None, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
                         print("Comparison Plots Generated.\n")
 
             except ValueError as ve:
