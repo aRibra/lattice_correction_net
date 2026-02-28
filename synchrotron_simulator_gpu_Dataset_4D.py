@@ -8,8 +8,9 @@ import seaborn as sns
 import traceback
 from numba import njit, prange
 from numba import cuda, float64
-# import torch
+import torch
 import matplotlib.cm as cm
+import psutil
 
 
 
@@ -444,11 +445,15 @@ class LatticeReference:
 
 
 class SynchrotronSimulator:
+    MAX_ITER_PER_INFER = 1  # Number of turns to process per GPU inference batch (configurable)
+    
     def __init__(self, design_radius, L_quad, L_straight, p, q, n_turns, total_dipole_bending_angle,
                  num_particles=1, n_FODO=None, L_dipole=None, n_Dipoles=None,
                  G=None, f=None, use_thin_lens=False, mag_field_range=(0.5, 2.0), dipole_length_range=(0.5, 5.0),
                  horizontal_tune_range=(0.2, 0.8), vertical_tune_range=(0.2, 0.8),
-                 use_gpu=False, verbose=True, figs_save_dir='figs', correct_injection_offset=False):
+                 use_gpu_numba=False, use_gpu_torch=False, max_iter_per_infer=1,
+                 use_memmap=False, memmap_dir=None,
+                 verbose=True, figs_save_dir='figs', correct_injection_offset=False):
         """
         Initialize the Synchrotron Simulator.
 
@@ -469,7 +474,16 @@ class SynchrotronSimulator:
             dipole_length_range (tuple): (min_Ld, max_Ld) in meters.
             horizontal_tune_range (tuple): (min_Qx, max_Qx).
             vertical_tune_range (tuple): (min_Qy, max_Qy)
-            use_gpu (bool): If True, perform simulation on GPU using Numba. Defaults to False.
+            use_gpu_numba (bool): If True, perform simulation on GPU using Numba CUDA. Defaults to False.
+            use_gpu_torch (bool): If True, perform simulation on GPU using PyTorch. Defaults to False.
+            max_iter_per_infer (int): Maximum number of turns to process per GPU inference batch. 
+                Controls memory usage - smaller values use less GPU memory but require more CPU-GPU transfers.
+                Defaults to 1 (process one turn at a time). Increase for better performance with large n_turns.
+            use_memmap (bool): If True, use memory-mapped files for BPM data storage. This allows
+                simulating datasets larger than available RAM by storing data on disk. The OS handles
+                paging automatically. Defaults to False.
+            memmap_dir (str): Directory to store memory-mapped files. If None, uses system temp directory.
+                Useful for specifying a fast SSD location. Defaults to None.
             verbose (bool): If True, print progress and information about the lattice and the simulation
         """
         # Design parameters
@@ -480,6 +494,16 @@ class SynchrotronSimulator:
         self.theta_dipole = None  # To be calculated
         self.use_thin_lens = use_thin_lens
         self.correct_injection_offset = correct_injection_offset
+
+        # GPU configuration
+        self.use_gpu_numba = use_gpu_numba  # Use Numba CUDA GPU
+        self.use_gpu_torch = use_gpu_torch  # Use PyTorch GPU
+        self.max_iter_per_infer = max_iter_per_infer  # Chunks for GPU processing
+
+        # Memory-mapped file configuration
+        self.use_memmap = use_memmap
+        self.memmap_dir = memmap_dir if memmap_dir else '/tmp'
+        self._memmap_files = {}  # Track memmap file paths for cleanup
 
         # Particle parameters
         # Conversion factor from GeV/c to kg·m/s
@@ -562,12 +586,8 @@ class SynchrotronSimulator:
         self.turns_full_oscillation_y = None
 
         # Particle states and positions
-        self.particles_states_x = []
-        self.particles_states_y = []
         self.particles_avg_x_positions = []
         self.particles_avg_y_positions = []
-        self.x_global_all = []
-        self.y_global_all = []
 
         # Lattice elements positions
         self.lattice_elements_positions = []
@@ -591,14 +611,23 @@ class SynchrotronSimulator:
         self.min_Qx, self.max_Qx = horizontal_tune_range
         self.min_Qy, self.max_Qy = vertical_tune_range
 
-        # GPU flag
-        self.use_gpu = use_gpu  # Flag to determine computation device
+        # GPU flag - determine which backend to use
+        # use_gpu_numba and use_gpu_torch are the new parameters
+        # If either is True, we'll use GPU simulation
+        self.use_gpu = use_gpu_numba or use_gpu_torch  # Legacy flag for backward compatibility
+        
         # Print backend info message
-        backend = ''
-        if self.use_gpu:
-            backend='GPU'
+        if use_gpu_numba and use_gpu_torch:
+            backend = 'GPU (Numba & PyTorch)'
+            print("Warning: Both use_gpu_numba and use_gpu_torch are True. Using PyTorch GPU.")
+            self.use_gpu_numba = False  # Prefer PyTorch
+        elif use_gpu_numba:
+            backend = 'GPU (Numba - deprecated)'
+            print("Warning: Numba GPU is deprecated. Consider using use_gpu_torch instead.")
+        elif use_gpu_torch:
+            backend = 'GPU (PyTorch)'
         else:
-            backend='cpu'
+            backend = 'CPU'
         self.backend_uasge_msg = f"[Info] Using `{backend}` backend for simulation."
         
         # Usefull for debugging
@@ -1563,62 +1592,60 @@ class SynchrotronSimulator:
         if self.num_particles != len(initial_states):
             raise ValueError("Number of initial states must match num_particles.")
 
-        # BPM arrays
+        # BPM arrays - use memory-mapped files if requested
         if self.n_FODO:
-            self.bpm_readings['x']  = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
-            self.bpm_readings['y']  = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
-            self.bpm_readings['xp'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
-            self.bpm_readings['yp'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
-            self.bpm_readings['s'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
+            shape = (self.num_particles, self.n_turns, self.n_FODO)
+            
+            if self.use_memmap:
+                # Create unique filename prefix for this simulation
+                import time
+                import uuid
+                timestamp = int(time.time() * 1000)
+                unique_id = uuid.uuid4().hex[:8]
+                prefix = f"bpm_{timestamp}_{unique_id}"
+                
+                # Create memmap files for each BPM array
+                self._memmap_files = {}
+                bpm_dir = self.memmap_dir
+                os.makedirs(bpm_dir, exist_ok=True)
+                
+                for key in ['x', 'y', 'xp', 'yp']:
+                    filepath = os.path.join(bpm_dir, f"{prefix}_{key}.dat")
+                    self._memmap_files[key] = filepath
+                    # Create memmap array (float64) - 'w+' mode creates or overwrites
+                    self.bpm_readings[key] = np.memmap(filepath, dtype=np.float64, mode='w+', shape=shape)
+                
+                # Also create a regular array for 's' if needed, or skip it
+                self.bpm_readings['s'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
+                
+                if self.verbose:
+                    print(f"[Memmap] Using memory-mapped files in {bpm_dir}")
+                    print(f"[Memmap] Files: {list(self._memmap_files.values())}")
+            else:
+                # Regular in-memory arrays
+                self.bpm_readings['x']  = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings['y']  = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings['xp'] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings['yp'] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings['s'] = np.zeros(shape, dtype=np.float64)
 
         x_co, y_co = self.compute_closed_orbit()
         print(f"Closed orbit computation: x_co={x_co}, y_co={y_co}")
 
         if self.use_gpu:
-            self._simulate_gpu(initial_states, x_co, y_co)
+            # Use PyTorch GPU by default (use_gpu_torch=True), fallback to Numba GPU if requested
+            if self.use_gpu_torch:
+                self._simulate_gpu_torch(initial_states, x_co, y_co)
+            elif self.use_gpu_numba:
+                print("Warning: Numba GPU implementation is deprecated.")
+                self._simulate_gpu(initial_states, x_co, y_co)
+            else:
+                # Default to PyTorch if GPU is enabled but neither flag is explicitly True
+                self._simulate_gpu_torch(initial_states, x_co, y_co)
         else:
             self._simulate_cpu(initial_states, x_co, y_co)
 
-        self.calculate_beam_size()
-
-        # Reconstruct states for plotting
-        self.particles_states_x = []
-        self.particles_states_y = []
-        self.x_global_all = []
-        self.y_global_all = []
-
-        for pid in range(self.num_particles):
-            states_x = []
-            states_y = []
-            theta_positions = []
-            theta_accumulated = 0.0
-
-            for turn in range(self.n_turns):
-                for cell in range(self.n_FODO):
-                    x  = self.bpm_readings['x'][pid, turn, cell]
-                    xp = self.bpm_readings['xp'][pid, turn, cell]
-                    y  = self.bpm_readings['y'][pid, turn, cell]
-                    yp = self.bpm_readings['yp'][pid, turn, cell]
-
-                    states_x.append([x, xp])
-                    states_y.append([y, yp])
-
-                    # approximate ring angle
-                    theta_increment = self.theta_dipole * 2
-                    theta_accumulated += -theta_increment
-                    theta_positions.append(theta_accumulated)
-
-            states_x = np.array(states_x)
-            states_y = np.array(states_y)
-            theta_positions = np.array(theta_positions)
-
-            x_global = (self.design_radius + states_x[:,0]) * np.cos(theta_positions)
-            y_global = (self.design_radius + states_y[:,0]) * np.sin(theta_positions)
-
-            self.particles_states_x.append(states_x)
-            self.particles_states_y.append(states_y)
-            self.x_global_all.append(x_global)
-            self.y_global_all.append(y_global)
+        # self.calculate_beam_size()
 
     def _simulate_cpu(self, initial_states, x_co, y_co):
         """CPU-based simulation in 4D."""
@@ -1698,8 +1725,8 @@ class SynchrotronSimulator:
         d_bpm_xp = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
         d_bpm_yp = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
 
-        threads_per_block = 512
-        blocks_per_grid = 512
+        threads_per_block = 256 # multiples of 32; max is 1024 (for Turing arch., compute capability 7.5 and above)
+        blocks_per_grid = (nb_particles + (threads_per_block - 1)) // threads_per_block
 
         @cuda.jit
         def simulate_kernel_4D(d_states, d_M_elem, d_D_elem, len_per_cell, n_FODO, n_turns,
@@ -1785,20 +1812,226 @@ class SynchrotronSimulator:
         self.bpm_readings['xp'] = d_bpm_xp.copy_to_host()
         self.bpm_readings['yp'] = d_bpm_yp.copy_to_host()
 
+    def _simulate_gpu_torch(self, initial_states, x_co=None, y_co=None):
+        nb_particles = len(initial_states)
+        if nb_particles == 0: return
+
+        # Correctly specify the device with an index for the GTX 2060
+        device_idx = 0 
+        device = torch.device(f'cuda:{device_idx}' if torch.cuda.is_available() else 'cpu')
+        
+        # 1. DYNAMIC STRATEGY INFERENCE (VRAM & RAM Check)
+        chunk_size = self.max_iter_per_infer if self.max_iter_per_infer > 0 else self.n_turns
+        
+        # Calculate estimated VRAM for one GPU chunk buffer (float64 = 8 bytes)
+        # Total memory for 4 coordinates: (particles * chunk_turns * n_FODO * 4 coordinates * 8 bytes)
+        vram_req_bytes = nb_particles * chunk_size * self.n_FODO * 4 * 8
+        
+        use_streaming = True # Default to the stable STREAMING (MINIMAL) approach
+        
+        if device.type.startswith('cuda'):
+            # Get free and total VRAM in bytes for the specific device index
+            free_vram, total_vram = torch.cuda.mem_get_info(device_idx)
+            
+            # Check System RAM (psutil) to see if we can even hold the full BPM array in memory
+            # Total BPM data = particles * n_turns * n_FODO * 4 * 8
+            total_data_req_bytes = nb_particles * self.n_turns * self.n_FODO * 4 * 8
+            available_ram = psutil.virtual_memory().available
+            
+            # Use BUFFERED only if VRAM requirement is < 90% of FREE VRAM
+            if vram_req_bytes < (free_vram * 0.9):
+                use_streaming = False
+                if self.verbose:
+                    print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB | Available: {free_vram/1e6:.1f}MB. Strategy: BUFFERED.")
+            else:
+                if self.verbose:
+                    print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB exceeds safety. Strategy: STREAMING.")
+            
+            # Force Memmap if the total simulation exceeds 90% of available System RAM
+            if total_data_req_bytes > (available_ram * 0.9) and not self.use_memmap:
+                if self.verbose:
+                    print(f"[Warning] Total data ({total_data_req_bytes/1e9:.1f}GB) exceeds RAM. Forcing Memmap.")
+                self.use_memmap = True
+
+        # 2. INITIALIZATION & PRE-COMPUTATION
+        init_np = np.array(initial_states, dtype=np.float64)
+        if self.correct_injection_offset and x_co is not None and y_co is not None:
+            init_np[:, 0] += x_co[0]; init_np[:, 1] += x_co[1]
+            init_np[:, 2] += y_co[0]; init_np[:, 3] += y_co[1]
+
+        states = torch.from_numpy(init_np).to(device).to(torch.float64)
+        
+        # Pre-calculate cell matrices using the helper logic
+        cell_M_stack, cell_D_stack = self._precompute_cell_matrices(device)
+        
+        # Allocate Output (respects self.use_memmap forced above if necessary)
+        bpm_x, bpm_y, bpm_xp, bpm_yp = self._allocate_bpm_outputs(nb_particles)
+
+        # 3. SIMULATION LOOP
+        n_chunks = (self.n_turns + chunk_size - 1) // chunk_size
+        log_indices = np.linspace(0, n_chunks - 1, 11, dtype=int)
+
+        for c_idx in range(n_chunks):
+            t_start = c_idx * chunk_size
+            t_end = min(t_start + chunk_size, self.n_turns)
+            cur_len = t_end - t_start
+
+            if self.verbose and c_idx in log_indices:
+                print(f"[PyTorch GPU] {('STREAMING' if use_streaming else 'BUFFERED')} {int(100*c_idx/n_chunks)}%")
+
+            if not use_streaming:
+                # BUFFERED Logic: High speed for fits-in-memory data
+                buf = torch.zeros((nb_particles, cur_len, self.n_FODO, 4), device=device, dtype=torch.float64)
+                for t_rel in range(cur_len):
+                    for cell_idx in range(self.n_FODO):
+                        states = torch.matmul(states, cell_M_stack[cell_idx]) + cell_D_stack[cell_idx]
+                        buf[:, t_rel, cell_idx, :] = states
+                
+                # Batch transfer to CPU
+                cpu_chunk = buf.cpu().numpy()
+                bpm_x[:, t_start:t_end, :] = cpu_chunk[..., 0]
+                bpm_xp[:, t_start:t_end, :] = cpu_chunk[..., 1]
+                bpm_y[:, t_start:t_end, :] = cpu_chunk[..., 2]
+                bpm_yp[:, t_start:t_end, :] = cpu_chunk[..., 3]
+                del buf # Free GPU memory immediately
+            else:
+                # STREAMING Logic: Direct write to handle 100,000+ turns safely
+                for turn in range(t_start, t_end):
+                    for cell_idx in range(self.n_FODO):
+                        states = torch.matmul(states, cell_M_stack[cell_idx]) + cell_D_stack[cell_idx]
+                        cpu_s = states.cpu().numpy()
+                        bpm_x[:, turn, cell_idx] = cpu_s[:, 0]
+                        bpm_xp[:, turn, cell_idx] = cpu_s[:, 1]
+                        bpm_y[:, turn, cell_idx] = cpu_s[:, 2]
+                        bpm_yp[:, turn, cell_idx] = cpu_s[:, 3]
+
+            if device.type.startswith('cuda'):
+                torch.cuda.empty_cache()
+
+        self.bpm_readings.update({'x': bpm_x, 'y': bpm_y, 'xp': bpm_xp, 'yp': bpm_yp})
+
+    def _precompute_cell_matrices(self, device):
+        """
+        Combines individual element matrices into a single cell-wise transfer matrix 
+        and kick vector to optimize GPU throughput.
+        """
+        cell_M_combined = []
+        cell_D_combined = []
+        
+        len_per_cell = np.array(self.len_per_cell_list, dtype=np.int64)
+        cell_starts = np.cumsum(np.concatenate([[0], len_per_cell[:-1]]))
+
+        for cell_idx in range(self.n_FODO):
+            n_elems = len_per_cell[cell_idx]
+            global_base_idx = cell_starts[cell_idx]
+            
+            # Initialize cell-level identity and zero-kick
+            M_total = torch.eye(4, device=device, dtype=torch.float64)
+            D_total = torch.zeros(4, device=device, dtype=torch.float64)
+            
+            for elem_idx in range(n_elems):
+                idx = global_base_idx + elem_idx
+                # Convert lattice matrices to PyTorch tensors
+                M_e = torch.from_numpy(self.M_lattice_4x4[idx]).to(device).to(torch.float64)
+                D_e = torch.from_numpy(self.D_lattice_4x1[idx]).to(device).to(torch.float64)
+                
+                # Composition logic: X_new = M_e @ (M_prev @ X + D_prev) + D_e
+                D_total = torch.matmul(M_e, D_total) + D_e
+                M_total = torch.matmul(M_e, M_total)
+
+            # Store transposed for batch multiplication: states @ M_total.T
+            cell_M_combined.append(M_total.T)
+            cell_D_combined.append(D_total)
+
+        return torch.stack(cell_M_combined), torch.stack(cell_D_combined)
+    
+    def _allocate_bpm_outputs(self, nb_particles):
+        """
+        Allocates arrays for BPM readings. 
+        Uses memory-mapped files on SSD if self.use_memmap is True.
+        """
+        bpm_shape = (nb_particles, self.n_turns, self.n_FODO)
+        
+        if self.use_memmap:
+            import uuid
+            # Ensure the directory exists
+            os.makedirs(self.memmap_dir, exist_ok=True)
+            unique_id = uuid.uuid4().hex[:8]
+            
+            # Define file paths
+            self._memmap_files = {
+                'x': os.path.join(self.memmap_dir, f'bpm_x_{unique_id}.dat'),
+                'y': os.path.join(self.memmap_dir, f'bpm_y_{unique_id}.dat'),
+                'xp': os.path.join(self.memmap_dir, f'bpm_xp_{unique_id}.dat'),
+                'yp': os.path.join(self.memmap_dir, f'bpm_yp_{unique_id}.dat')
+            }
+            
+            # Create the memmap arrays (mode 'w+' creates the file)
+            bpm_x = np.memmap(self._memmap_files['x'], dtype=np.float64, mode='w+', shape=bpm_shape)
+            bpm_y = np.memmap(self._memmap_files['y'], dtype=np.float64, mode='w+', shape=bpm_shape)
+            bpm_xp = np.memmap(self._memmap_files['xp'], dtype=np.float64, mode='w+', shape=bpm_shape)
+            bpm_yp = np.memmap(self._memmap_files['yp'], dtype=np.float64, mode='w+', shape=bpm_shape)
+            
+            if self.verbose:
+                print(f"[Memmap] Allocated 4x {bpm_shape} arrays on SSD at {self.memmap_dir}")
+                
+            return bpm_x, bpm_y, bpm_xp, bpm_yp
+        else:
+            # Standard RAM allocation
+            bpm_x = np.zeros(bpm_shape, dtype=np.float64)
+            bpm_y = np.zeros(bpm_shape, dtype=np.float64)
+            bpm_xp = np.zeros(bpm_shape, dtype=np.float64)
+            bpm_yp = np.zeros(bpm_shape, dtype=np.float64)
+            return bpm_x, bpm_y, bpm_xp, bpm_yp
+
+    def cleanup_memmap(self):
+        """
+        Clean up memory-mapped files.
+        
+        This method should be called after finishing using the simulator with memmap=True
+        to delete the temporary memory-mapped files and free disk space.
+        """
+        if hasattr(self, '_memmap_files') and self._memmap_files:
+            import gc
+            # Force garbage collection to release memmap references
+            gc.collect()
+            
+            # Delete memmap arrays and files
+            for key in ['x', 'y', 'xp', 'yp']:
+                if key in self.bpm_readings and self.bpm_readings[key] is not None:
+                    # Delete the memmap object (this flushes and closes the file)
+                    del self.bpm_readings[key]
+                
+                # Delete the file if it exists
+                if key in self._memmap_files:
+                    filepath = self._memmap_files[key]
+                    if os.path.exists(filepath):
+                        try:
+                            os.remove(filepath)
+                            if self.verbose:
+                                print(f"[Memmap] Removed file: {filepath}")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[Memmap] Warning: Could not remove file {filepath}: {e}")
+            
+            self._memmap_files = {}
+            
+            if self.verbose:
+                print("[Memmap] Cleanup complete.")
 
     def calculate_beam_size(self):
-        """Calculate beam size (RMS width and height) from BPM readings."""
+        """Calculate beam size (RMS width and height) from BPM readings.
+        
+        Memory-efficient version: computes std directly without creating flattened copies.
+        """
         if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
             print("BPMs are not placed in the lattice.")
             return
 
-        # BPM readings are 3D numpy arrays: [num_particles, n_turns, n_FODO]
-        x_measurements = self.bpm_readings['x'].flatten()
-        y_measurements = self.bpm_readings['y'].flatten()
-
-        # Compute beam sizes (standard deviations)
-        self.epsilon_horizontal = np.std(x_measurements)
-        self.epsilon_vertical = np.std(y_measurements)
+        # Compute beam sizes (standard deviations) directly on the array
+        # np.std(arr) computes over all elements without creating a copy
+        self.epsilon_horizontal = np.std(self.bpm_readings['x'])
+        self.epsilon_vertical = np.std(self.bpm_readings['y'])
 
     def plot_ring(self, ax=None, plot_xlim=None, plot_ylim=None):
         """Plot the ring and elements with start of each FODO cell indicated and BPMs rotated perpendicular to the ring."""
@@ -1914,49 +2147,6 @@ class SynchrotronSimulator:
         
         plt.tight_layout()
 
-    def plot_particle_trajectory(self, start_idx=0, end_idx=None, plot_xlim=None, plot_ylim=None, save_label='0'):
-        """Plot the particle trajectories (bird's-eye view) between specified indices."""
-        total_turns = self.n_turns
-        end_idx = end_idx if end_idx is not None else total_turns
-        n_turns_to_plot = end_idx - start_idx
-
-        # Prepare the plot
-        fig, ax = plt.subplots(figsize=(10, 10), constrained_layout=True)
-        
-        # Plot the ring and elements into the same Axes
-        self.plot_ring(ax=ax, plot_xlim=plot_xlim, plot_ylim=plot_ylim)
-
-        # Now plot the particle trajectories
-        colors = get_colors(self.num_particles)
-
-        for idx in range(self.num_particles):
-            total_points_per_turn = len(self.particles_states_x[idx]) // self.n_turns
-            start_point = total_points_per_turn * start_idx
-            end_point = total_points_per_turn * end_idx
-            ax.plot(self.x_global_all[idx][start_point:end_point],
-                    self.y_global_all[idx][start_point:end_point],
-                    color=colors[idx])  # label=f'Particle {idx+1}'
-            ax.plot(self.x_global_all[idx][start_point], self.y_global_all[idx][start_point],
-                    marker='.', color=colors[idx], markersize=10, linestyle='None')
-
-        ax.set_title(f'Particle Trajectories from Turn {start_idx} to {end_idx}')
-        ax.legend()
-        
-        if plot_xlim is not None:
-            ax.set_xlim(plot_xlim)
-        
-        if plot_ylim is not None:
-            ax.set_ylim(plot_ylim)
-
-        ax.set_aspect('equal')
-
-        plt.tight_layout()
-            
-        plt.savefig(f"{self.figs_save_dir}/plot_particle_trajectory_{save_label}.eps", bbox_inches = 'tight', format='eps')
-
-        plt.show()
-        
-        return fig, ax
 
     def plot_average_positions(self, cell_idx=0, window_size=5, start_idx=0, end_idx=None, save_label='0'):
         """
@@ -3569,7 +3759,7 @@ class SimulationRunner:
                 config_no_error['quad_tilt_errors'] = None  # Ensure no error is present
                 config_no_error['dipole_tilt_errors'] = None  # Ensure no error is present
 
-                # Initialize simulator without error, including use_gpu
+                # Initialize simulator without error, including use_gpu_torch
                 simulator_no_error = SynchrotronSimulator(
                     design_radius=config_no_error['design_radius'],
                     G=config_no_error['G'],
@@ -3589,7 +3779,8 @@ class SimulationRunner:
                     dipole_length_range=merged_config.get('dipole_length_range', (0.5, 5.0)),
                     horizontal_tune_range=merged_config.get('horizontal_tune_range', (0.2, 0.8)),
                     vertical_tune_range=merged_config.get('vertical_tune_range', (0.2, 0.8)),
-                    use_gpu=merged_config.get('use_gpu', False),
+                    use_gpu_torch=merged_config.get('use_gpu_torch', False),
+                    use_gpu_numba=merged_config.get('use_gpu_numba', False),
                     verbose=merged_config.get('verbose', False),
                     figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
                     correct_injection_offset=merged_config.get('correct_injection_offset', False)
@@ -3689,7 +3880,7 @@ class SimulationRunner:
                             f"L_straight={config_with_error['L_straight']}m")
                         print("="*80)
 
-                    # Initialize simulator with error, including use_gpu
+                    # Initialize simulator with error, including use_gpu_torch
                     simulator_with_error = SynchrotronSimulator(
                         design_radius=config_with_error['design_radius'],
                         G=config_with_error['G'],
@@ -3709,7 +3900,11 @@ class SimulationRunner:
                         dipole_length_range=merged_config.get('dipole_length_range', (0.5, 5.0)),
                         horizontal_tune_range=merged_config.get('horizontal_tune_range', (0.2, 0.8)),
                         vertical_tune_range=merged_config.get('vertical_tune_range', (0.2, 0.8)),
-                        use_gpu=merged_config.get('use_gpu', False),
+                        use_gpu_torch=merged_config.get('use_gpu_torch', False),
+                        use_gpu_numba=merged_config.get('use_gpu_numba', False),
+                        max_iter_per_infer=merged_config.get('max_iter_per_infer', 1),
+                        use_memmap=merged_config.get('use_memmap', False),
+                        memmap_dir=merged_config.get('memmap_dir', None),
                         verbose=merged_config.get('verbose', False),
                         figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
                         correct_injection_offset=merged_config.get('correct_injection_offset', False)
@@ -3789,8 +3984,325 @@ class SimulationRunner:
 
 
 def test_cpu_gpu_consistency():
-    pass
+    """
+    Test consistency between CPU, Numba GPU, and PyTorch GPU simulations.
+    """
+    import torch
+    from test_configs import config, other_config
+    
+    config['n_turns'] = 1000
+    config['num_particles'] = 100
+    config['max_iter_per_infer'] = 100 # used only for PyTorch
+    
+    all_config = {**config, **other_config}    
 
-# Run the test
-test_cpu_gpu_consistency()
+    print("=" * 80)
+    print("Testing CPU vs GPU (Numba) vs GPU (PyTorch) Consistency")
+    print("=" * 80)
+
+    # Generate initial states
+    np.random.seed(42)
+    initial_states = np.random.randn(config['num_particles'], 4) * 1e-4
+    
+    # Test 1: CPU Simulation
+    print("\n--- Running CPU Simulation ---")
+    config_cpu = config.copy()
+    config_cpu['verbose'] = False
+    
+    simulator_cpu = SynchrotronSimulator(**config_cpu)
+    simulator_cpu.simulate(initial_states)
+    
+    bpm_cpu = {
+        'x': simulator_cpu.bpm_readings['x'].copy(),
+        'y': simulator_cpu.bpm_readings['y'].copy(),
+        'xp': simulator_cpu.bpm_readings['xp'].copy(),
+        'yp': simulator_cpu.bpm_readings['yp'].copy(),
+    }
+    print(f"CPU simulation complete. BPM x shape: {bpm_cpu['x'].shape}")
+    
+    # Test 2: Numba GPU Simulation
+    print("\n--- Running Numba GPU Simulation ---")
+    config_numba = config.copy()
+    config_numba['use_gpu_numba'] = True
+    config_numba['verbose'] = False
+    
+    try:
+        simulator_numba = SynchrotronSimulator(**config_numba)
+        simulator_numba.simulate(initial_states)
+        
+        bpm_numba = {
+            'x': simulator_numba.bpm_readings['x'].copy(),
+            'y': simulator_numba.bpm_readings['y'].copy(),
+            'xp': simulator_numba.bpm_readings['xp'].copy(),
+            'yp': simulator_numba.bpm_readings['yp'].copy(),
+        }
+        print(f"Numba GPU simulation complete. BPM x shape: {bpm_numba['x'].shape}")
+    except Exception as e:
+        print(f"Numba GPU simulation failed: {e}")
+        bpm_numba = None
+    
+    # Test 3: PyTorch GPU Simulation
+    print("\n--- Running PyTorch GPU Simulation ---")
+    config_torch = config.copy()
+    config_torch['use_gpu_torch'] = True  # Use PyTorch GPU
+    config_torch['verbose'] = False
+    
+    simulator_torch = SynchrotronSimulator(**config_torch)
+    
+    # Manually run PyTorch simulation
+    try:
+        simulator_torch._simulate_gpu_torch(initial_states)
+        
+        bpm_torch = {
+            'x': simulator_torch.bpm_readings['x'].copy(),
+            'y': simulator_torch.bpm_readings['y'].copy(),
+            'xp': simulator_torch.bpm_readings['xp'].copy(),
+            'yp': simulator_torch.bpm_readings['yp'].copy(),
+        }
+        print(f"PyTorch GPU simulation complete. BPM x shape: {bpm_torch['x'].shape}")
+    except Exception as e:
+        print(f"PyTorch GPU simulation failed: {e}")
+        traceback.print_exc()
+        bpm_torch = None
+    finally:
+        simulator_torch.cleanup_memmap()
+    
+    # Compare results
+    print("\n" + "=" * 80)
+    print("Comparison Results")
+    print("=" * 80)
+    
+    if bpm_numba is not None:
+        # Compare CPU vs Numba
+        max_diff_x = np.max(np.abs(bpm_cpu['x'] - bpm_numba['x']))
+        max_diff_y = np.max(np.abs(bpm_cpu['y'] - bpm_numba['y']))
+        mean_diff_x = np.mean(np.abs(bpm_cpu['x'] - bpm_numba['x']))
+        mean_diff_y = np.mean(np.abs(bpm_cpu['y'] - bpm_numba['y']))
+        
+        print(f"\nCPU vs Numba GPU:")
+        print(f"  Max |Δx|: {max_diff_x:.2e} m")
+        print(f"  Max |Δy|: {max_diff_y:.2e} m")
+        print(f"  Mean |Δx|: {mean_diff_x:.2e} m")
+        print(f"  Mean |Δy|: {mean_diff_y:.2e} m")
+        
+        tol = 5e-10
+        if max_diff_x < tol and max_diff_y < tol:
+            print("  ✓ CPU and Numba GPU results are consistent!")
+        else:
+            print("  ✗ WARNING: CPU and Numba GPU results differ!")
+    
+    if bpm_torch is not None:
+        # Compare CPU vs PyTorch
+        max_diff_x = np.max(np.abs(bpm_cpu['x'] - bpm_torch['x']))
+        max_diff_y = np.max(np.abs(bpm_cpu['y'] - bpm_torch['y']))
+        mean_diff_x = np.mean(np.abs(bpm_cpu['x'] - bpm_torch['x']))
+        mean_diff_y = np.mean(np.abs(bpm_cpu['y'] - bpm_torch['y']))
+        
+        print(f"\nCPU vs PyTorch GPU:")
+        print(f"  Max |Δx|: {max_diff_x:.2e} m")
+        print(f"  Max |Δy|: {max_diff_y:.2e} m")
+        print(f"  Mean |Δx|: {mean_diff_x:.2e} m")
+        print(f"  Mean |Δy|: {mean_diff_y:.2e} m")
+        
+        tol = 5e-10
+        if max_diff_x < tol and max_diff_y < tol:
+            print("  ✓ CPU and PyTorch GPU results are consistent!")
+        else:
+            print("  ✗ WARNING: CPU and PyTorch GPU results differ!")
+    
+    if bpm_numba is not None and bpm_torch is not None:
+        # Compare Numba vs PyTorch
+        max_diff_x = np.max(np.abs(bpm_numba['x'] - bpm_torch['x']))
+        max_diff_y = np.max(np.abs(bpm_numba['y'] - bpm_torch['y']))
+        mean_diff_x = np.mean(np.abs(bpm_numba['x'] - bpm_torch['x']))
+        mean_diff_y = np.mean(np.abs(bpm_numba['y'] - bpm_torch['y']))
+        
+        print(f"\nNumba GPU vs PyTorch GPU:")
+        print(f"  Max |Δx|: {max_diff_x:.2e} m")
+        print(f"  Max |Δy|: {max_diff_y:.2e} m")
+        print(f"  Mean |Δx|: {mean_diff_x:.2e} m")
+        print(f"  Mean |Δy|: {mean_diff_y:.2e} m")
+        
+        tol = 5e-10
+        if max_diff_x < tol and max_diff_y < tol:
+            print("  ✓ Numba GPU and PyTorch GPU results are consistent!")
+        else:
+            print("  ✗ WARNING: Numba GPU and PyTorch GPU results differ!")
+    
+    # print std and mean for all BPM readings (cpu, numba, torch)
+    print("\nBPM Readings Statistics:")
+    for backend, bpm in zip(['CPU', 'Numba GPU', 'PyTorch GPU'], [bpm_cpu, bpm_numba, bpm_torch]):
+        if bpm is not None:
+            std_x = np.std(bpm['x'])
+            std_y = np.std(bpm['y'])
+            mean_x = np.mean(bpm['x'])
+            mean_y = np.mean(bpm['y'])
+            print(f"  {backend}:")
+            print(f"    - BPM x: mean={mean_x:.2e} m, std={std_x:.2e} m")
+            print(f"    - BPM y: mean={mean_y:.2e} m, std={std_y:.2e} m")
+    
+    print("\n" + "=" * 80)
+    print("Test Complete")
+    print("=" * 80)
+    
+    return {
+        'cpu': bpm_cpu,
+        'numba': bpm_numba,
+        'torch': bpm_torch
+    }
+
+
+def benchmark_simulation_speed(n_runs=3):
+    """
+    Benchmark the speed of CPU, Numba GPU, and PyTorch GPU simulations.
+    
+    Parameters:
+        n_runs (int): Number of runs to average over for timing.
+    
+    Returns:
+        dict: Dictionary containing timing results for each backend.
+    """
+    from test_configs import config, other_config
+    import torch
+    import time
+    
+    print("=" * 80)
+    print("Simulation Speed Benchmark")
+    print("=" * 80)
+    
+    config['n_turns'] = 6000
+    config['num_particles'] = 6000
+    config['max_iter_per_infer'] = 1000 # used only for PyTorch
+    
+    # Configuration parameters - use more turns and particles for meaningful benchmark
+    all_config = {**config, **other_config}
+    
+    # Generate initial states
+    np.random.seed(42)
+    initial_states = np.random.randn(all_config['num_particles'], 4) * 1e-4
+    
+    results = {}
+    
+    # # Test 1: CPU Simulation
+    # print("\n--- Benchmarking CPU Simulation ---")
+    # config_cpu = config.copy()
+    
+    # cpu_times = []
+    # for run in range(n_runs):
+    #     start_time = time.time()
+    #     simulator_cpu = SynchrotronSimulator(**config_cpu)
+    #     simulator_cpu.simulate(initial_states)
+    #     elapsed = time.time() - start_time
+    #     cpu_times.append(elapsed)
+    #     print(f"  Run {run+1}/{n_runs}: {elapsed:.3f} seconds")
+    
+    # avg_cpu_time = np.mean(cpu_times)
+    # std_cpu_time = np.std(cpu_times)
+    # results['cpu'] = {
+    #     'avg_time': avg_cpu_time,
+    #     'std_time': std_cpu_time,
+    #     'all_times': cpu_times
+    # }
+    # print(f"  Average: {avg_cpu_time:.3f} ± {std_cpu_time:.3f} seconds")
+    
+    # Test 2: Numba GPU Simulation
+    print("\n--- Benchmarking Numba GPU Simulation ---")
+    config_numba = config.copy()
+    config_numba['use_gpu_numba'] = True
+    
+    numba_times = []
+    try:
+        for run in range(n_runs):
+            start_time = time.time()
+            simulator_numba = SynchrotronSimulator(**config_numba)
+            simulator_numba.simulate(initial_states)
+            elapsed = time.time() - start_time
+            numba_times.append(elapsed)
+            print(f"  Run {run+1}/{n_runs}: {elapsed:.3f} seconds")
+        
+        avg_numba_time = np.mean(numba_times)
+        std_numba_time = np.std(numba_times)
+        results['numba_gpu'] = {
+            'avg_time': avg_numba_time,
+            'std_time': std_numba_time,
+            'all_times': numba_times
+        }
+        print(f"  Average: {avg_numba_time:.3f} ± {std_numba_time:.3f} seconds")
+    except Exception as e:
+        print(f"  Numba GPU simulation failed: {e}")
+        traceback.print_exc()
+        results['numba_gpu'] = None
+    
+    # Test 3: PyTorch GPU Simulation
+    print("\n--- Benchmarking PyTorch GPU Simulation ---")
+    config_torch = config.copy()
+    config_torch['use_gpu_torch'] = True
+    
+    torch_times = []
+    try:
+        for run in range(n_runs):
+            simulator_torch = SynchrotronSimulator(**config_torch)
+            start_time = time.time()
+            simulator_torch._simulate_gpu_torch(initial_states)
+            elapsed = time.time() - start_time
+            torch_times.append(elapsed)
+            print(f"  Run {run+1}/{n_runs}: {elapsed:.3f} seconds")
+        
+        avg_torch_time = np.mean(torch_times)
+        std_torch_time = np.std(torch_times)
+        results['torch_gpu'] = {
+            'avg_time': avg_torch_time,
+            'std_time': std_torch_time,
+            'all_times': torch_times
+        }
+        print(f"  Average: {avg_torch_time:.3f} ± {std_torch_time:.3f} seconds")
+    except Exception as e:
+        print(f"  PyTorch GPU simulation failed: {e}")
+        traceback.print_exc()
+        results['torch_gpu'] = None
+    finally:
+        print("\nCleaning up PyTorch GPU resources...")
+        simulator_torch.cleanup_memmap()
+    
+    # Summary
+    print("\n" + "=" * 80)
+    print("Benchmark Summary")
+    print("=" * 80)
+    
+    print(f"\nConfiguration:")
+    print(f"  - Turns: {all_config['n_turns']}")
+    print(f"  - Particles: {all_config['num_particles']}")
+    print(f"  - FODO Cells: {all_config['n_FODO']}")
+    print(f"  - Runs averaged: {n_runs}")
+    
+    print(f"\nTiming Results:")
+    if results.get('cpu') is not None:
+        print(f"  CPU:         {results['cpu']['avg_time']:.3f} ± {results['cpu']['std_time']:.3f} seconds")
+    
+    if results.get('numba_gpu') is not None:
+        if results.get('cpu') is not None:
+            speedup_cpu_numba = results['cpu']['avg_time'] / results['numba_gpu']['avg_time']
+        else:
+            speedup_cpu_numba = float('nan')
+        print(f"  Numba GPU:   {results['numba_gpu']['avg_time']:.3f} ± {results['numba_gpu']['std_time']:.3f} seconds (Speedup vs cpu: {speedup_cpu_numba:.2f}x)")
+    else:
+        print(f"  Numba GPU:   FAILED")
+    
+    if results.get('torch_gpu') is not None:
+        if results.get('cpu') is not None:
+            speedup_cpu_torch = results['cpu']['avg_time'] / results['torch_gpu']['avg_time']
+        else:
+            speedup_cpu_torch = float('nan')
+        print(f"  PyTorch GPU: {results['torch_gpu']['avg_time']:.3f} ± {results['torch_gpu']['std_time']:.3f} seconds (Speedup vs cpu: {speedup_cpu_torch:.2f}x)")
+    else:
+        print(f"  PyTorch GPU: FAILED")
+    
+    print("\n" + "=" * 80)
+    
+    return results
+
+
+# Run the benchmark
+if __name__ == "__main__":
+    benchmark_simulation_speed()
 

@@ -164,6 +164,7 @@ common_parameters = {
     'total_dipole_bending_angle_range': (1.5 * np.pi, 2 * np.pi),
     # Use cuda GPU kernels to accelerate simulation
     'use_gpu': True,
+    'max_iter_per_infer': 1, # Max number of iterations per inference step (for PyTorch GPU simulation)
     # Log
     'verbose': False,
     # BPM readings log criterion
