@@ -46,9 +46,9 @@ class SimulationDataset:
         self.lattice_reference.describe()
         self.apply_avg = apply_avg
 
-    def generate_data(self, start_rev, end_rev, fodo_cell_indices, planes, include_no_error_data=False):
+    def process_simulated_data(self, start_rev, end_rev, fodo_cell_indices, planes, include_no_error_data=False):
         """
-        Generate data for training the network.
+        Process simulated data for training the network.
 
         Parameters:
             start_rev (int): Starting revolution index.
@@ -65,9 +65,6 @@ class SimulationDataset:
             error_values_quad_tilt (torch.Tensor): Quadrupole tilt angle error(s).
             error_values_dipole_tilt (torch.Tensor): Dipole tilt angle error(s).
         """
-
-        print(f"--\n------\n---------------------------------------- include_no_error_data={include_no_error_data}")
-
         errors_list_quad_mis_align = []
         errors_list_quad_tilt_angles = []
         errors_list_dipole_tilt_angles = []
@@ -80,7 +77,7 @@ class SimulationDataset:
         len_defined_errors = len(np.flatnonzero(list(errors_state.values())))
         
         if self.merged_config['reject_multiple_error_types'] and len_defined_errors > 1:
-            raise Exception(f"SimulationDataset/generate_data(): Defining multiple error types is rejected in the config"
+            raise Exception(f"SimulationDataset/process_simulated_data(): Defining multiple error types is rejected in the config"
                                         " in data automation phase. Please pass `reject_multiple_error_types=True`"
                                         f" errors_state: {errors_state}")
 
@@ -102,46 +99,55 @@ class SimulationDataset:
 
         # For each plane, compute the mean over particles, and select the specified BPMs and revolutions
         for plane in planes:
-            readings_plane_no_error = readings_no_error[plane][:, start_rev:end_rev, fodo_cell_indices]
             readings_plane_with_error = readings_with_error[plane][:, start_rev:end_rev, fodo_cell_indices]
-
             # Compute mean over particles
-            mean_no_error = np.mean(readings_plane_no_error, axis=0)  # Shape: [n_turns, n_BPMs]
             mean_with_error = np.mean(readings_plane_with_error, axis=0)  # Shape: [n_turns, n_BPMs]
-
-            all_ravg_no_error = []
             all_ravg_with_error = []
             
             # Loop over BPMs
             for cell_ix in range(len(fodo_cell_indices)):
                 if self.apply_avg:
-                    ravg_no_error = self.running_average_numpy(mean_no_error[:, cell_ix],
-                                                               window_size=end_rev - start_rev - 100)
                     ravg_with_error = self.running_average_numpy(mean_with_error[:, cell_ix],
                                                                  window_size=end_rev - start_rev - 100)
                 else:
-                    ravg_no_error = mean_no_error[:, cell_ix]
+                    # if not applying average, just take the raw mean values for the specified revolution range
                     ravg_with_error = mean_with_error[:, cell_ix]
                     
-                all_ravg_no_error.append(ravg_no_error[..., np.newaxis])
                 all_ravg_with_error.append(ravg_with_error[..., np.newaxis])
             
             # concat data for all BPMs together
-            all_ravg_no_error = np.concatenate(all_ravg_no_error, axis=-1)
             all_ravg_with_error = np.concatenate(all_ravg_with_error, axis=-1)
-    
-            data_no_error.append(all_ravg_no_error[..., np.newaxis])  # Shape: [n_turns, n_BPMs, 1]
             data_with_error.append(all_ravg_with_error[..., np.newaxis])  # Shape: [n_turns, n_BPMs, 1]
-
+            
+            # Only process no_error data if it exists
+            if readings_no_error is not None:
+                readings_plane_no_error = readings_no_error[plane][:, start_rev:end_rev, fodo_cell_indices]
+                mean_no_error = np.mean(readings_plane_no_error, axis=0)  # Shape: [n_turns, n_BPMs]
+                all_ravg_no_error = []
+                
+                for cell_ix in range(len(fodo_cell_indices)):
+                    if self.apply_avg:
+                        ravg_no_error = self.running_average_numpy(mean_no_error[:, cell_ix],
+                                                                   window_size=end_rev - start_rev - 100)
+                    else:
+                        ravg_no_error = mean_no_error[:, cell_ix]
+                        
+                    all_ravg_no_error.append(ravg_no_error[..., np.newaxis])
+                
+                all_ravg_no_error = np.concatenate(all_ravg_no_error, axis=-1)
+                data_no_error.append(all_ravg_no_error[..., np.newaxis])  # Shape: [n_turns, n_BPMs, 1]
+                
         # Concatenate planes if necessary
         if len(planes) > 1:
-            data_no_error = np.concatenate(data_no_error, axis=-1)     # Shape: [n_turns, n_BPMs, len(planes)]
             data_with_error = np.concatenate(data_with_error, axis=-1)
+            if readings_no_error is not None:
+                data_no_error = np.concatenate(data_no_error, axis=-1)
         else:
-            data_no_error = data_no_error[0]       # Shape: [n_turns, n_BPMs, 1]
             data_with_error = data_with_error[0]
+            if readings_no_error is not None:
+                data_no_error = data_no_error[0]
 
-        if include_no_error_data:
+        if include_no_error_data and readings_no_error is not None:
             # Stack data along a new axis to create n_training_samples dimension
             input_data = np.stack([data_with_error, data_no_error], axis=0)
         else:
@@ -163,12 +169,10 @@ class SimulationDataset:
         for error in errors_list_dipole_tilt_angles:
             if isinstance(error, DipoleTiltError):
                 error_values_dipole_tilt.append(error.tilt_angle)
-        
-        print(self.merged_config)
-        
+                
         if not self.merged_config['target_data']:
             target_error_values = []
-            print("[WARNING] SimulationDataset.generate_data()/ `target_data` was not specified in the configuration. "
+            print("[WARNING] SimulationDataset.process_simulated_data()/ `target_data` was not specified in the configuration. "
                   "Therefore, there will be no errors applied.")
         elif self.merged_config['target_data'] == 'quad_misalign_deltas' and errors_state['quadrupole_errors']:
             target_error_values = error_values_quad_misalign
@@ -196,6 +200,7 @@ class SimulationDataset:
 
         # Flatten input_data for scaling
         n_training_samples, n_turns, n_BPMs, n_features = input_data.shape
+                
         input_data_reshaped = input_data.reshape(n_training_samples * n_turns * n_BPMs, n_features)
 
         # Reshape back for torch
@@ -375,11 +380,21 @@ class DataAutomation:
         Runs simulations with the same design, varying only the quadrupole error delta and initial conditions.
         Collects the input and target data tensors from each simulation.
         """
+        # Read include_no_error_data from config if set, otherwise use parameter default
+        include_no_error_data = self.common_parameters.get('include_no_error_data', include_no_error_data)
 
-        quad_misalign_delta_mean_or_min, quad_misalign_delta_std_or_max = self.common_parameters['delta_range']
-        quad_tilt_mean_or_min, quad_tilt_std_or_max = self.common_parameters['quad_tilt_angle_range']
-        dipole_tilt_mean_or_min, dipole_tilt_std_or_max = self.common_parameters['dipole_tilt_angle_range']
-        delta_range_min, delta_range_max = self.common_parameters['com_delta_range']
+        # Validate configuration parameters
+        if not self.common_parameters.get('delta_range') and not self.common_parameters.get('quad_tilt_angle_range') and not self.common_parameters.get('dipole_tilt_angle_range'):
+            raise ValueError("No error ranges defined in configuration. Please specify at least one of: delta_range, quad_tilt_angle_range, or dipole_tilt_angle_range")
+        
+        quad_misalign_delta_mean_or_min, quad_misalign_delta_std_or_max = self.common_parameters.get('delta_range', (0, 0))
+        quad_tilt_mean_or_min, quad_tilt_std_or_max = self.common_parameters.get('quad_tilt_angle_range', (0, 0))
+        dipole_tilt_mean_or_min, dipole_tilt_std_or_max = self.common_parameters.get('dipole_tilt_angle_range', (0, 0))
+        delta_range_min, delta_range_max = self.common_parameters.get('com_delta_range', (0, 0))
+
+        print(f"[run_simulations] Starting {self.n_simulations} simulations with include_no_error_data={include_no_error_data}")
+        print(f"[run_simulations] Error ranges: quad_misalign={quad_misalign_delta_mean_or_min, quad_misalign_delta_std_or_max}, "
+              f"quad_tilt={quad_tilt_mean_or_min, quad_tilt_std_or_max}, dipole_tilt={dipole_tilt_mean_or_min, dipole_tilt_std_or_max}")
 
         for sim_idx in tqdm(range(self.n_simulations), desc="Running Simulations"):
             base_config = self.overridden_base_config.copy()
@@ -428,7 +443,9 @@ class DataAutomation:
             )
 
             try:
-                runner.run_configurations(draw_plots=False, verbose=False)
+                print("*" * 100)
+                print(f"{include_no_error_data:}")
+                runner.run_configurations(draw_plots=False, verbose=False, run_no_error_sim=include_no_error_data)
 
                 config_key_no_error = f"{base_config['config_name']} - No Error"
                 config_key_with_error = f"{base_config['config_name']} - With Error"
@@ -436,56 +453,73 @@ class DataAutomation:
                 simulator_no_error = runner.simulators_no_error.get(config_key_no_error)
                 simulator_with_error = runner.simulators_with_error.get(config_key_with_error)
                 
-                print("sim no error tunes:")
-                simulator_no_error.compute_tunes()
+                # Only compute tunes for no-error simulator if it was run
+                if simulator_no_error is not None:
+                    print("sim no error tunes:")
+                    simulator_no_error.compute_tunes()
+                    
+                    print("sim no error compute_tune_from_cell:")
+                    simulator_no_error.compute_tune_from_cell()
                 
                 print("sim with error tunes:")
                 simulator_with_error.compute_tunes()
 
-                print("sim no error compute_tune_from_cell:")
-                simulator_no_error.compute_tune_from_cell()
-                
                 print("sim with error compute_tune_from_cell:")
                 simulator_with_error.compute_tune_from_cell()
 
-                if simulator_no_error and simulator_with_error:
-                    delta_x, delta_y = self.compute_com_deltas(simulator_no_error, simulator_with_error)
+                # When include_no_error_data is False, simulator_no_error will be None
+                # We still process data if simulator_with_error exists
+                if simulator_with_error:
+                    # Compute CoM deltas only if both simulators are available
+                    if simulator_no_error is not None:
+                        delta_x, delta_y = self.compute_com_deltas(simulator_no_error, simulator_with_error)
+                    else:
+                        # If no no-error sim, set deltas to None (they won't be used for filtering)
+                        delta_x, delta_y = None, None
 
-                    if skip_data_on_delta_ranges and \
+                    if skip_data_on_delta_ranges and delta_x is not None and delta_y is not None and \
                         not (delta_range_min <= delta_x <= delta_range_max and
                              delta_range_min <= delta_y <= delta_range_max):
                         print(f"Simulation {sim_idx}: Delta out of range (delta_x={delta_x}, "
                               f"delta_y={delta_y}), random_delta={random_delta} skipping.")
                         continue
                     else:
-                        self.com_deltas_x.append(delta_x)
-                        self.com_deltas_y.append(delta_y)
+                        if delta_x is not None and delta_y is not None:
+                            self.com_deltas_x.append(delta_x)
+                            self.com_deltas_y.append(delta_y)
+
+                        # Use with-error simulator for positions/reference when no-error sim is not available
+                        bpm_readings_no_error = simulator_no_error.bpm_readings if simulator_no_error is not None else None
+                        bpm_positions = simulator_no_error.bpm_positions if simulator_no_error is not None else simulator_with_error.bpm_positions
+                        lattice_reference = simulator_no_error.get_lattice_reference() if simulator_no_error is not None else simulator_with_error.get_lattice_reference()
 
                         simulation_dataset = SimulationDataset(
                             merged_config=self.merged_config,
-                            bpm_readings_no_error=simulator_no_error.bpm_readings,
+                            bpm_readings_no_error=bpm_readings_no_error,
                             bpm_readings_with_error=simulator_with_error.bpm_readings,
-                            bpm_positions=simulator_no_error.bpm_positions,
+                            bpm_positions=bpm_positions,
                             quadrupole_errors=simulator_with_error.quad_errors,
                             quadrupole_tilt_errors=simulator_with_error.quadrupole_tilt_errors,
                             dipole_tilt_errors=simulator_with_error.dipole_tilt_errors,
-                            lattice_reference=simulator_no_error.get_lattice_reference(),
+                            lattice_reference=lattice_reference,
                             apply_avg=self.common_parameters.get('apply_avg', False)
                         )
 
                         start_rev = self.common_parameters.get('start_rev', 0)
-                        end_rev = self.common_parameters.get('end_rev', simulator_no_error.n_turns)
+                        end_rev = self.common_parameters.get('end_rev', simulator_with_error.n_turns)
                         fodo_cell_indices = self.common_parameters.get('fodo_cell_indices',
-                                                                       list(range(simulator_no_error.n_FODO)))
+                                                                       list(range(simulator_with_error.n_FODO)))
                         planes = self.common_parameters.get('planes', ['x', 'y'])
 
                         (input_tensor, target_tensor,
                          error_values_quad_misalign,
                          error_values_quad_tilt,
-                         error_values_dipole_tilt) = simulation_dataset.generate_data(
+                         error_values_dipole_tilt) = simulation_dataset.process_simulated_data(
                             start_rev, end_rev, fodo_cell_indices, planes,
                             include_no_error_data=include_no_error_data
                         )
+
+                        print(f"After process_simulated_data()/ Input tensor shape: {input_tensor.shape}")
 
                         self.all_input_tensors.append(input_tensor)
                         self.all_target_tensors.append(target_tensor)
@@ -495,6 +529,32 @@ class DataAutomation:
 
                         # Save after each successful simulation
                         self.save_data(postfix="accumulated")
+
+                        # --- MEMORY CLEANUP ---
+                        # Clear BPM readings from simulators to free RAM before next iteration
+                        if simulator_no_error is not None:
+                            for key in ['x', 'y', 'xp', 'yp', 's']:
+                                simulator_no_error.bpm_readings[key] = None
+                            # Call cleanup_memmap if it exists (for memmap-based simulations)
+                            if hasattr(simulator_no_error, 'cleanup_memmap'):
+                                simulator_no_error.cleanup_memmap()
+                        
+                        for key in ['x', 'y', 'xp', 'yp', 's']:
+                            simulator_with_error.bpm_readings[key] = None
+                        # Call cleanup_memmap if it exists (for memmap-based simulations)
+                        if hasattr(simulator_with_error, 'cleanup_memmap'):
+                            simulator_with_error.cleanup_memmap()
+                        
+                        # Clear runner's dictionaries to remove references
+                        runner.simulators_no_error.clear()
+                        runner.simulators_with_error.clear()
+                        
+                        # Force garbage collection to free memory immediately
+                        import gc
+                        gc.collect()
+                        
+                        if self.common_parameters.get('verbose', False):
+                            print(f"[Memory Cleanup] Simulation {sim_idx} - RAM freed after data extraction.")
 
                 else:
                     print(f"Simulation {sim_idx} failed or missing simulators.")
@@ -577,20 +637,26 @@ class DataAutomation:
 
 
             n_samples, n_turns, n_BPMs, n_features = self.all_input_tensors_torch.shape
-            input_data_reshaped = self.all_input_tensors_torch.reshape(n_samples * n_turns * n_BPMs, n_features)
-
-            input_data_scaled = self.data_scalers['input_scaler'].fit_transform(input_data_reshaped)
-            self.all_input_tensors_scaled_torch = input_data_scaled.reshape(n_samples, n_turns, n_BPMs, n_features)
-            self.all_input_tensors_scaled_torch = torch.tensor(self.all_input_tensors_scaled_torch, dtype=torch.float32)
-
-            if len(self.all_target_tensors_torch.shape) > 2:
-                n_samples, n_targets = self.all_target_tensors_torch.shape
-                target_data_reshaped = self.all_target_tensors_torch.reshape(n_samples, n_targets)
+                        
+            # Check if we have any samples before attempting to scale
+            if n_samples == 0:
+                print("[WARNING] No samples available for scaling. Skipping scaling step.")
+                self.all_input_tensors_scaled_torch = self.all_input_tensors_torch
+                self.all_target_tensors_scaled_torch = self.all_target_tensors_torch
             else:
-                target_data_reshaped = self.all_target_tensors_torch
+                input_data_reshaped = self.all_input_tensors_torch.reshape(n_samples * n_turns * n_BPMs, n_features)
+                input_data_scaled = self.data_scalers['input_scaler'].fit_transform(input_data_reshaped)
+                self.all_input_tensors_scaled_torch = input_data_scaled.reshape(n_samples, n_turns, n_BPMs, n_features)
+                self.all_input_tensors_scaled_torch = torch.tensor(self.all_input_tensors_scaled_torch, dtype=torch.float32)
 
-            self.all_target_tensors_scaled_torch = self.data_scalers['target_scaler'].fit_transform(target_data_reshaped)
-            self.all_target_tensors_scaled_torch = torch.tensor(self.all_target_tensors_scaled_torch, dtype=torch.float32)
+                if len(self.all_target_tensors_torch.shape) > 2:
+                    n_samples, n_targets = self.all_target_tensors_torch.shape
+                    target_data_reshaped = self.all_target_tensors_torch.reshape(n_samples, n_targets)
+                else:
+                    target_data_reshaped = self.all_target_tensors_torch
+
+                self.all_target_tensors_scaled_torch = self.data_scalers['target_scaler'].fit_transform(target_data_reshaped)
+                self.all_target_tensors_scaled_torch = torch.tensor(self.all_target_tensors_scaled_torch, dtype=torch.float32)
 
             self.all_error_values_quad_misalign_torch = torch.cat(self.all_error_values_quad_misalign, dim=0)
             self.all_error_values_quad_tilt_torch = torch.cat(self.all_error_values_quad_tilt, dim=0)
@@ -598,9 +664,11 @@ class DataAutomation:
         else:
             self.all_input_tensors_torch = None
             self.all_target_tensors_torch = None
-            self.all_error_values_quad_misalign = None
-            self.all_error_values_quad_tilt = None
-            self.all_error_values_dipole_tilt = None
+            self.all_input_tensors_scaled_torch = None
+            self.all_target_tensors_scaled_torch = None
+            self.all_error_values_quad_misalign_torch = None
+            self.all_error_values_quad_tilt_torch = None
+            self.all_error_values_dipole_tilt_torch = None
 
         torch.save(self, f"{self.output_folder_path}/data_automation-{postfix}.pt")
         torch.save(self.merged_config, f"{self.output_folder_path}/merged_config-{postfix}.pt")

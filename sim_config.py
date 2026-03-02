@@ -145,8 +145,8 @@ common_parameters = {
     'G': 1.0,                         # Tesla/meter
     'q': 1.602e-19,                   # Proton charge in Coulombs
     'n_turns': 6000,                   # Number of revolutions to simulate
-    'num_particles': 5,             # Number of particles to simulate
-    'window_size': 10,                # Average window size for moving averages
+    'num_particles': 3000,             # Number of particles to simulate
+    'window_size': 0,                # Average window size for moving averages
     'use_thin_lens': True,
     # Uniform - Initial conditions ranges as tuples
     'x0_mean_std': (0.0, 0.05),      # meters
@@ -163,10 +163,10 @@ common_parameters = {
     'vertical_tune_range': [0.1, 0.8],        # Tune
     'total_dipole_bending_angle_range': (1.5 * np.pi, 2 * np.pi),
     # Use cuda GPU kernels to accelerate simulation
-    'use_gpu': True,
-    'max_iter_per_infer': 1, # Max number of iterations per inference step (for PyTorch GPU simulation)
+    'use_gpu_torch': True,
+    'max_iter_per_infer': 1000, # Max number of iterations per inference step (for PyTorch GPU simulation)
     # Log
-    'verbose': False,
+    'verbose': True,
     # BPM readings log criterion
     # record_full_revolution. By default records for cell_idx=0
     # 'record_full_revolution': False,
@@ -179,10 +179,10 @@ common_parameters = {
     # Parameters for generate_data
     'target_data': 'quad_misalign_deltas',  # ['quad_misalign_deltas', 'quad_tilt_angles', 'dipole_tilt_angles']
     'reject_multiple_error_types': False,
-    'start_rev': 0,
-    'end_rev': 6000, # should be same as <= n_turns
+    'start_rev': 5900, # should be <= n_turns
+    'end_rev': 6000, # should be > start_rev && <= n_turns
     'apply_avg': False,
-    'include_no_error_data': True,
+    'include_no_error_data': False,
     'fodo_cell_indices': [0, 1, 2, 3, 4, 5, 6, 7],  # Indices of BPMs to consider
     'planes': ['x', 'y'],
     'random_criterion': 'normal', # uniform | normal

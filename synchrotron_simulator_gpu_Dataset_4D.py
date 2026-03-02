@@ -11,7 +11,7 @@ from numba import cuda, float64
 import torch
 import matplotlib.cm as cm
 import psutil
-
+import gc
 
 
 # Define color palette for plotting
@@ -450,7 +450,7 @@ class SynchrotronSimulator:
     def __init__(self, design_radius, L_quad, L_straight, p, q, n_turns, total_dipole_bending_angle,
                  num_particles=1, n_FODO=None, L_dipole=None, n_Dipoles=None,
                  G=None, f=None, use_thin_lens=False, mag_field_range=(0.5, 2.0), dipole_length_range=(0.5, 5.0),
-                 horizontal_tune_range=(0.2, 0.8), vertical_tune_range=(0.2, 0.8),
+                 horizontal_tune_range=(0.2, 0.8), vertical_tune_range=(0.2, 0.8), 
                  use_gpu_numba=False, use_gpu_torch=False, max_iter_per_infer=1,
                  use_memmap=False, memmap_dir=None,
                  verbose=True, figs_save_dir='figs', correct_injection_offset=False):
@@ -1827,7 +1827,7 @@ class SynchrotronSimulator:
         # Total memory for 4 coordinates: (particles * chunk_turns * n_FODO * 4 coordinates * 8 bytes)
         vram_req_bytes = nb_particles * chunk_size * self.n_FODO * 4 * 8
         
-        use_streaming = True # Default to the stable STREAMING (MINIMAL) approach
+        use_streaming = True # Default to the stable STREAMING approach
         
         if device.type.startswith('cuda'):
             # Get free and total VRAM in bytes for the specific device index
@@ -1835,11 +1835,12 @@ class SynchrotronSimulator:
             
             # Check System RAM (psutil) to see if we can even hold the full BPM array in memory
             # Total BPM data = particles * n_turns * n_FODO * 4 * 8
+            # times 8 bytes because we are using float64)
             total_data_req_bytes = nb_particles * self.n_turns * self.n_FODO * 4 * 8
             available_ram = psutil.virtual_memory().available
             
             # Use BUFFERED only if VRAM requirement is < 90% of FREE VRAM
-            if vram_req_bytes < (free_vram * 0.9):
+            if vram_req_bytes < (free_vram * 0.95):
                 use_streaming = False
                 if self.verbose:
                     print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB | Available: {free_vram/1e6:.1f}MB. Strategy: BUFFERED.")
@@ -1848,7 +1849,8 @@ class SynchrotronSimulator:
                     print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB exceeds safety. Strategy: STREAMING.")
             
             # Force Memmap if the total simulation exceeds 90% of available System RAM
-            if total_data_req_bytes > (available_ram * 0.9) and not self.use_memmap:
+            print(f"[PSUTIL] RAM Req: {total_data_req_bytes/1e9:.1f}GB | Available: ({available_ram/1e9:.1f}GB). ")
+            if total_data_req_bytes > (available_ram * 0.93) and not self.use_memmap:
                 if self.verbose:
                     print(f"[Warning] Total data ({total_data_req_bytes/1e9:.1f}GB) exceeds RAM. Forcing Memmap.")
                 self.use_memmap = True
@@ -1880,7 +1882,7 @@ class SynchrotronSimulator:
                 print(f"[PyTorch GPU] {('STREAMING' if use_streaming else 'BUFFERED')} {int(100*c_idx/n_chunks)}%")
 
             if not use_streaming:
-                # BUFFERED Logic: High speed for fits-in-memory data
+                # BUFFERED-in-gpu Logic: High speed for fits-in-memory data
                 buf = torch.zeros((nb_particles, cur_len, self.n_FODO, 4), device=device, dtype=torch.float64)
                 for t_rel in range(cur_len):
                     for cell_idx in range(self.n_FODO):
@@ -1895,7 +1897,7 @@ class SynchrotronSimulator:
                 bpm_yp[:, t_start:t_end, :] = cpu_chunk[..., 3]
                 del buf # Free GPU memory immediately
             else:
-                # STREAMING Logic: Direct write to handle 100,000+ turns safely
+                # STREAMING-to-cpu Logic: Direct write to handle 100,000+ turns safely
                 for turn in range(t_start, t_end):
                     for cell_idx in range(self.n_FODO):
                         states = torch.matmul(states, cell_M_stack[cell_idx]) + cell_D_stack[cell_idx]
@@ -1905,8 +1907,10 @@ class SynchrotronSimulator:
                         bpm_y[:, turn, cell_idx] = cpu_s[:, 2]
                         bpm_yp[:, turn, cell_idx] = cpu_s[:, 3]
 
+            gc.collect()
+            
             if device.type.startswith('cuda'):
-                torch.cuda.empty_cache()
+                torch.cuda.empty_cache()    
 
         self.bpm_readings.update({'x': bpm_x, 'y': bpm_y, 'xp': bpm_xp, 'yp': bpm_yp})
 
@@ -1992,7 +1996,6 @@ class SynchrotronSimulator:
         to delete the temporary memory-mapped files and free disk space.
         """
         if hasattr(self, '_memmap_files') and self._memmap_files:
-            import gc
             # Force garbage collection to release memmap references
             gc.collect()
             
@@ -2402,11 +2405,6 @@ class SynchrotronSimulator:
             y_no_error = y_no_error_mean
             x_with_error = x_with_error_mean
             y_with_error =  y_with_error_mean
-
-        # x_no_error_ravg = self.running_average_numpy(x_no_error, window_size=len(x_no_error) - int(len(x_no_error) * 0.1))
-        # y_no_error_ravg = self.running_average_numpy(y_no_error, window_size=len(y_no_error) - int(len(x_no_error) * 0.1))
-        # x_with_error_ravg = self.running_average_numpy(x_with_error, window_size=len(x_with_error) - int(len(x_no_error) * 0.1))
-        # y_with_error_ravg = self.running_average_numpy(y_with_error, window_size=len(y_with_error) - int(len(x_no_error) * 0.1))
 
         # Compute Center of Mass for both simulations
         com_x_no_error = np.mean(x_no_error)
@@ -3732,10 +3730,193 @@ class SimulationRunner:
 
         return x0, y0
 
-    def run_configurations(self, initial_states=None, draw_plots=True, verbose=True):
+    def _generate_initial_states(self, merged_config, simulator_no_error, verbose=True):
+        """
+        Generate initial particle states based on the configuration.
+        
+        Parameters:
+            merged_config (dict): Merged configuration parameters.
+            simulator_no_error (SynchrotronSimulator): Simulator instance for Twiss parameter calculation.
+            verbose (bool): Whether to print verbose output.
+            
+        Returns:
+            np.ndarray: Array of initial particle states with shape (num_particles, 4).
+        """
+        # Extract initial condition ranges
+        x0_mean, x0_std = merged_config['x0_mean_std']
+        xp0_mean, xp0_std = merged_config['xp0_mean_std']
+        y0_mean, y0_std = merged_config['y0_mean_std']
+        yp0_mean, yp0_std = merged_config['yp0_mean_std']
+        
+        # Generate initial_states based on the extracted ranges
+        if merged_config['particles_sampling_method'] in ['normal', 'circle_with_radius']:
+            if merged_config['particles_sampling_method'] == 'normal':
+                x0s = self.generate_init_states(x0_mean, x0_std, size=merged_config['num_particles'])
+                y0s = self.generate_init_states(y0_mean, y0_std, size=merged_config['num_particles'])
+            
+            elif merged_config['particles_sampling_method'] == 'circle_with_radius':
+                radius = merged_config['sampling_circle_radius']
+                x0s, y0s = self.generate_init_pos_radius(num_particles=merged_config['num_particles'])
+            
+            # X' Y' angles in radians                
+            if xp0_mean == xp0_std == 0.0:
+                xp0s = np.zeros(merged_config['num_particles'])
+            else:
+                xp0s = self.generate_init_states(xp0_mean, xp0_std, size=merged_config['num_particles'])
+            
+            if yp0_mean == yp0_std == 0.0:
+                yp0s = np.zeros(merged_config['num_particles'])
+            else:
+                yp0s = self.generate_init_states(yp0_mean, yp0_std, size=merged_config['num_particles'])
+            
+            mean_x0s = np.mean(x0s)
+            mean_y0s = np.mean(y0s)
+            
+            initial_states = np.stack([x0s, xp0s, y0s, yp0s], axis=1)
+            self.initial_states = initial_states
+        
+            if verbose:
+                print(f"init X and Y sampling method: {merged_config['particles_sampling_method']}")
+                print(f"init states mean_x0s={mean_x0s}, mean_y0s={mean_y0s}")
+                print("initial_states = ", initial_states)
+        
+        elif merged_config['particles_sampling_method'] == 'from_twiss_params':
+            alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = simulator_no_error.compute_twiss_parameters()
+            print(f'Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}')
+            initial_states = simulator_no_error.generate_initial_states_from_twiss(alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, merged_config['num_particles'])                        
+            self.initial_states = initial_states
+            
+        return initial_states
+
+    def _create_simulator(self, config, merged_config, verbose=True):
+        """
+        Helper method to create a simulator instance with the given configuration.
+        Does not run the simulation.
+        
+        Parameters:
+            config (dict): Configuration dictionary for this simulation.
+            merged_config (dict): Merged base and common parameters.
+            verbose (bool): Whether to print verbose output.
+            
+        Returns:
+            SynchrotronSimulator: Initialized simulator instance.
+        """
+        # Initialize simulator
+        simulator = SynchrotronSimulator(
+            design_radius=config['design_radius'],
+            G=config['G'],
+            f=config['f'],
+            use_thin_lens=config['use_thin_lens'],
+            L_quad=config['L_quad'],
+            L_straight=config['L_straight'],
+            p=config['p'],
+            q=config['q'],
+            n_turns=config['n_turns'],
+            total_dipole_bending_angle=config['total_dipole_bending_angle'],
+            num_particles=config['num_particles'],
+            n_FODO=config['n_FODO'],
+            L_dipole=config['L_dipole'],
+            n_Dipoles=config['n_Dipoles'],
+            mag_field_range=merged_config.get('mag_field_range', (0.5, 2.0)),
+            dipole_length_range=merged_config.get('dipole_length_range', (0.5, 5.0)),
+            horizontal_tune_range=merged_config.get('horizontal_tune_range', (0.2, 0.8)),
+            vertical_tune_range=merged_config.get('vertical_tune_range', (0.2, 0.8)),
+            use_gpu_torch=merged_config.get('use_gpu_torch', False),
+            use_gpu_numba=merged_config.get('use_gpu_numba', False),
+            max_iter_per_infer=merged_config.get('max_iter_per_infer', 1),
+            use_memmap=merged_config.get('use_memmap', False),
+            memmap_dir=merged_config.get('memmap_dir', None),
+            verbose=merged_config.get('verbose', False),
+            figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
+            correct_injection_offset=merged_config.get('correct_injection_offset', False)
+        )
+        
+        if verbose:
+            print(simulator.backend_uasge_msg)
+            simulator.describe()
+            
+        return simulator
+
+    def _run_single_simulation(self, config, merged_config, initial_states=None, verbose=True):
+        """
+        Helper method to run a single simulation with the given configuration.
+        
+        Parameters:
+            config (dict): Configuration dictionary for this simulation.
+            merged_config (dict): Merged base and common parameters.
+            initial_states (np.ndarray, optional): Initial particle states. If None, will be generated.
+            verbose (bool): Whether to print verbose output.
+            
+        Returns:
+            tuple: (simulator, initial_states_used)
+        """
+        # Create simulator instance
+        simulator = self._create_simulator(config, merged_config, verbose)
+        
+        # Generate initial states if not provided
+        if initial_states is None:
+            # Extract initial condition ranges
+            x0_mean, x0_std = merged_config['x0_mean_std']
+            xp0_mean, xp0_std = merged_config['xp0_mean_std']
+            y0_mean, y0_std = merged_config['y0_mean_std']
+            yp0_mean, yp0_std = merged_config['yp0_mean_std']
+            
+            # Generate initial_states based on the extracted ranges
+            if merged_config['particles_sampling_method'] in ['normal', 'circle_with_radius']:
+                if merged_config['particles_sampling_method'] == 'normal':
+                    x0s = self.generate_init_states(x0_mean, x0_std, size=merged_config['num_particles'])
+                    y0s = self.generate_init_states(y0_mean, y0_std, size=merged_config['num_particles'])
+                
+                elif merged_config['particles_sampling_method'] == 'circle_with_radius':
+                    radius = merged_config['sampling_circle_radius']
+                    x0s, y0s = self.generate_init_pos_radius(num_particles=merged_config['num_particles'])
+                
+                # X' Y' angles in radians                
+                if xp0_mean == xp0_std == 0.0:
+                    xp0s = np.zeros(merged_config['num_particles'])
+                else:
+                    xp0s = self.generate_init_states(xp0_mean, xp0_std, size=merged_config['num_particles'])
+                
+                if yp0_mean == yp0_std == 0.0:
+                    yp0s = np.zeros(merged_config['num_particles'])
+                else:
+                    yp0s = self.generate_init_states(yp0_mean, yp0_std, size=merged_config['num_particles'])
+                
+                mean_x0s = np.mean(x0s)
+                mean_y0s = np.mean(y0s)
+                
+                initial_states = np.stack([x0s, xp0s, y0s, yp0s], axis=1)
+                self.initial_states = initial_states
+            
+                if verbose:
+                    print(f"init X and Y sampling method: {merged_config['particles_sampling_method']}")
+                    print(f"init states mean_x0s={mean_x0s}, mean_y0s={mean_y0s}")
+                    print("initial_states = ", initial_states)
+            
+            elif merged_config['particles_sampling_method'] == 'from_twiss_params':
+                alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = simulator.compute_twiss_parameters()
+                print(f'Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}')
+                initial_states = simulator.generate_initial_states_from_twiss(alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, merged_config['num_particles'])                        
+                self.initial_states = initial_states
+
+        if verbose:
+            print("initial_states = ", initial_states)
+
+        # Run simulation
+        simulator.simulate(initial_states)
+        
+        return simulator, initial_states
+
+    def run_configurations(self, initial_states=None, draw_plots=True, verbose=True, run_no_error_sim=True):
         """
         Runs simulations for each base configuration both without and with quadrupole errors,
         and generates comparison plots if errors are introduced.
+        
+        Parameters:
+            initial_states (np.ndarray, optional): Initial particle states. If None, will be generated.
+            draw_plots (bool): Whether to generate comparison plots.
+            verbose (bool): Whether to print verbose output.
+            run_no_error_sim (bool): If True, run simulation without errors. If False, skip it.
         """
         for base_config in self.base_configurations:
             # --- Merge Base Config with Common Parameters ---
@@ -3752,106 +3933,37 @@ class SimulationRunner:
                 print("="*80)
 
             try:
-                # --- Simulation Without Error ---
-                config_no_error = merged_config.copy()
-                config_no_error['config_name'] = f"{config_name} - No Error"
-                config_no_error['quad_errors'] = None  # Ensure no error is present
-                config_no_error['quad_tilt_errors'] = None  # Ensure no error is present
-                config_no_error['dipole_tilt_errors'] = None  # Ensure no error is present
+                # Create simulator without running simulation
+                simulator_no_error = self._create_simulator(merged_config, merged_config, verbose)
 
-                # Initialize simulator without error, including use_gpu_torch
-                simulator_no_error = SynchrotronSimulator(
-                    design_radius=config_no_error['design_radius'],
-                    G=config_no_error['G'],
-                    f=config_no_error['f'],
-                    use_thin_lens=config_no_error['use_thin_lens'],
-                    L_quad=config_no_error['L_quad'],
-                    L_straight=config_no_error['L_straight'],
-                    p=config_no_error['p'],
-                    q=config_no_error['q'],
-                    n_turns=config_no_error['n_turns'],
-                    total_dipole_bending_angle=config_no_error['total_dipole_bending_angle'],
-                    num_particles=config_no_error['num_particles'],
-                    n_FODO=config_no_error['n_FODO'],
-                    L_dipole=config_no_error['L_dipole'],
-                    n_Dipoles=config_no_error['n_Dipoles'],
-                    mag_field_range=merged_config.get('mag_field_range', (0.5, 2.0)),
-                    dipole_length_range=merged_config.get('dipole_length_range', (0.5, 5.0)),
-                    horizontal_tune_range=merged_config.get('horizontal_tune_range', (0.2, 0.8)),
-                    vertical_tune_range=merged_config.get('vertical_tune_range', (0.2, 0.8)),
-                    use_gpu_torch=merged_config.get('use_gpu_torch', False),
-                    use_gpu_numba=merged_config.get('use_gpu_numba', False),
-                    verbose=merged_config.get('verbose', False),
-                    figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
-                    correct_injection_offset=merged_config.get('correct_injection_offset', False)
-                )
-                
-                if verbose:
-                    print(simulator_no_error.backend_uasge_msg)
-                    simulator_no_error.describe()
-
-                # initial_states can be passed to the `run_configurations()`
-                # for re-running the simulation with the same particles initial states.
+                # Generate initial states if not provided
                 if initial_states is None:
-                    # Extract initial condition ranges
-                    x0_mean, x0_std = merged_config['x0_mean_std']
-                    xp0_mean, xp0_std = merged_config['xp0_mean_std']
-                    y0_mean, y0_std = merged_config['y0_mean_std']
-                    yp0_mean, yp0_std = merged_config['yp0_mean_std']
-                    
-                    
-                    # Generate initial_states based on the extracted ranges
-                    if merged_config['particles_sampling_method'] in ['normal', 'circle_with_radius']:
-                        if merged_config['particles_sampling_method'] == 'normal':
-                            x0s = self.generate_init_states(x0_mean, x0_std, size=merged_config['num_particles'])
-                            y0s = self.generate_init_states(y0_mean, y0_std, size=merged_config['num_particles'])
-                        
-                        elif merged_config['particles_sampling_method'] == 'circle_with_radius':
-                            radius = merged_config['sampling_circle_radius']
-                            x0s, y0s = self.generate_init_pos_radius(num_particles=merged_config['num_particles'])
-                        
-                        # X' Y' angles in radians                
-                        if xp0_mean == xp0_std == 0.0:
-                            xp0s = np.zeros(merged_config['num_particles'])
-                        else:
-                            xp0s = self.generate_init_states(xp0_mean, xp0_std, size=merged_config['num_particles'])
-                        
-                        if yp0_mean == yp0_std == 0.0:
-                            yp0s = np.zeros(merged_config['num_particles'])
-                        else:
-                            yp0s = self.generate_init_states(yp0_mean, yp0_std, size=merged_config['num_particles'])
-                        
-                        mean_x0s = np.mean(x0s)
-                        mean_y0s = np.mean(y0s)
-                        
-                        initial_states = np.stack([x0s, xp0s, y0s, yp0s], axis=1)
-                        self.initial_states = initial_states
-                    
-                        if verbose:
-                            print(f"init X and Y sampling method: {merged_config['particles_sampling_method']}")
-                            print(f"init states mean_x0s={mean_x0s}, mean_y0s={mean_y0s}")
-                            print("initial_states = ", initial_states)
-                    
-                    elif merged_config['particles_sampling_method'] == 'from_twiss_params':
-                        alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = simulator_no_error.compute_twiss_parameters()
-                        print(f'Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}')
-                        initial_states = simulator_no_error.generate_initial_states_from_twiss(alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, merged_config['num_particles'])                        
-                        self.initial_states = initial_states
-                else:
-                    self.initial_states = initial_states
+                    initial_states = self._generate_initial_states(merged_config, simulator_no_error, verbose)
+                
+                simulator_no_error = None
 
                 if verbose:
                     print("initial_states = ", initial_states)
+                
+                # --- Simulation Without Error (conditional) ---
+                if run_no_error_sim:
+                    if verbose:
+                        print(f"Creating simulator WITHOUT ERROR")
+                    config_no_error = merged_config.copy()
+                    config_no_error['config_name'] = f"{config_name} - No Error"
+                    config_no_error['quad_errors'] = None  # Ensure no error is present
+                    config_no_error['quad_tilt_errors'] = None  # Ensure no error is present
+                    config_no_error['dipole_tilt_errors'] = None  # Ensure no error is present
 
-                # Simulate without errors
-                simulator_no_error.simulate(initial_states)
+                    # Run simulation
+                    simulator_no_error.simulate(initial_states)
 
-                # Store the simulator instance
-                self.simulators_no_error[config_no_error['config_name']] = simulator_no_error
+                    # Store the simulator instance
+                    self.simulators_no_error[config_no_error['config_name']] = simulator_no_error
 
-                if verbose:
-                    print("==========" * 10)
-
+                    if verbose:
+                        print("==========" * 10)
+                
                 # --- Simulation With Error ---
                 quad_errors = merged_config.get('quad_errors', None)
                 dipole_tilt_errors = merged_config.get('dipole_tilt_errors', None)
@@ -3880,35 +3992,10 @@ class SimulationRunner:
                             f"L_straight={config_with_error['L_straight']}m")
                         print("="*80)
 
-                    # Initialize simulator with error, including use_gpu_torch
-                    simulator_with_error = SynchrotronSimulator(
-                        design_radius=config_with_error['design_radius'],
-                        G=config_with_error['G'],
-                        f=config_with_error['f'],
-                        use_thin_lens=config_with_error['use_thin_lens'],
-                        L_quad=config_with_error['L_quad'],
-                        L_straight=config_with_error['L_straight'],
-                        p=config_with_error['p'],
-                        q=config_with_error['q'],
-                        n_turns=config_with_error['n_turns'],
-                        total_dipole_bending_angle=config_with_error['total_dipole_bending_angle'],
-                        num_particles=config_with_error['num_particles'],
-                        n_FODO=config_with_error['n_FODO'],
-                        L_dipole=config_with_error['L_dipole'],
-                        n_Dipoles=config_with_error['n_Dipoles'],
-                        mag_field_range=merged_config.get('mag_field_range', (0.5, 2.0)),
-                        dipole_length_range=merged_config.get('dipole_length_range', (0.5, 5.0)),
-                        horizontal_tune_range=merged_config.get('horizontal_tune_range', (0.2, 0.8)),
-                        vertical_tune_range=merged_config.get('vertical_tune_range', (0.2, 0.8)),
-                        use_gpu_torch=merged_config.get('use_gpu_torch', False),
-                        use_gpu_numba=merged_config.get('use_gpu_numba', False),
-                        max_iter_per_infer=merged_config.get('max_iter_per_infer', 1),
-                        use_memmap=merged_config.get('use_memmap', False),
-                        memmap_dir=merged_config.get('memmap_dir', None),
-                        verbose=merged_config.get('verbose', False),
-                        figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
-                        correct_injection_offset=merged_config.get('correct_injection_offset', False)
-                    )
+                    # Create simulator without running simulation
+                    if verbose:
+                        print(f"Creating simulator WITH ERROR")
+                    simulator_with_error = self._create_simulator(config_with_error, merged_config, verbose)
 
                     if quad_errors:
                         # Introduce quadrupole misalignment errors
@@ -3943,25 +4030,23 @@ class SimulationRunner:
                     if verbose:
                         simulator_with_error.describe()
 
-                    # Simulate with errors
+                    # Run simulation with errors applied
                     simulator_with_error.simulate(initial_states)
 
                     # Store the simulator instance
                     self.simulators_with_error[config_with_error['config_name']] = simulator_with_error
 
-                    if draw_plots:
+                    if draw_plots and simulator_no_error is not None:
                         # --- Comparison Plots ---
-                        print("\nGenerating Comparison Plots...")
+                        if verbose:
+                            print("\nGenerating Comparison Plots...")
                         # Specify the BPM (FODO cell) index you want to plot
                         cell_idx = 0  # Change this index as needed
                         simulator_no_error.plot_bpm_comparison_last_images(simulator_no_error, simulator_with_error, cell_idx=cell_idx, particles='all_mean')
-                        viz_start_idx = simulator_no_error.n_turns - 100
-                        viz_end_idx = simulator_no_error.n_turns
-                        # simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=viz_end_idx - 100,
-                        #                      viz_end_idx=viz_end_idx, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
-                        simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=None,
-                                             viz_end_idx=None, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
-                        print("Comparison Plots Generated.\n")
+                        # simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=None,
+                        #                      viz_end_idx=None, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
+                        if verbose:
+                            print("Comparison Plots Generated.\n")
 
             except ValueError as ve:
                 if verbose:

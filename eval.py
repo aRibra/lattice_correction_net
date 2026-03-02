@@ -481,7 +481,7 @@ def _run_evaluation(model, base_configurations, common_parameters, dataset_scale
     (input_tensor, target_tensor,
      error_values_quad_misalign,
      error_values_quad_tilt,
-     error_values_dipole_tilt) = simulation_dataset.generate_data(
+     error_values_dipole_tilt) = simulation_dataset.process_simulated_data(
         start_rev, end_rev, fodo_cell_indices, planes
     )
 
