@@ -37,64 +37,55 @@ base_configurations = [
         # 'quad_errors': None,
 
         'quad_errors': [
+            # {
+            #     'FODO_index': 0,
+            #     'quad_type': 'defocusing',
+            #     'delta': 1e-5,
+            #     'plane': 'vertical'  # 'horizontal' or 'vertical'
+            # },
             {
                 'FODO_index': 1,
                 'quad_type': 'defocusing',
-                'delta': 0.0,
+                'delta': 1e-6,
                 'plane': 'vertical'  # 'horizontal' or 'vertical'
-            }
+            },
+            {
+                'FODO_index': 2,
+                'quad_type': 'defocusing',
+                'delta': 1e-7,
+                'plane': 'vertical'  # 'horizontal' or 'vertical'
+            },
+            {
+                'FODO_index': 3,
+                'quad_type': 'defocusing',
+                'delta': 1e-7,
+                'plane': 'vertical'  # 'horizontal' or 'vertical'
+            },
+            {
+                'FODO_index': 4,
+                'quad_type': 'defocusing',
+                'delta': 1e-7,
+                'plane': 'vertical'  # 'horizontal' or 'vertical'
+            },
+            {
+                'FODO_index': 5,
+                'quad_type': 'defocusing',
+                'delta': 1e-7,
+                'plane': 'vertical'  # 'horizontal' or 'vertical'
+            },
+            # {
+            #     'FODO_index': 6,
+            #     'quad_type': 'defocusing',
+            #     'delta': 1e-7,
+            #     'plane': 'vertical'  # 'horizontal' or 'vertical'
+            # },
+            {
+                'FODO_index': 7,
+                'quad_type': 'defocusing',
+                'delta': 1e-7,
+                'plane': 'vertical'  # 'horizontal' or 'vertical'
+            },
         ],
-
-        # 'quad_errors': [
-        #     # {
-        #     #     'FODO_index': 0,
-        #     #     'quad_type': 'defocusing',
-        #     #     'delta': 1e-5,
-        #     #     'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     # },
-        #     {
-        #         'FODO_index': 1,
-        #         'quad_type': 'defocusing',
-        #         'delta': 1e-6,
-        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     },
-        #     {
-        #         'FODO_index': 2,
-        #         'quad_type': 'defocusing',
-        #         'delta': 1e-7,
-        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     },
-        #     {
-        #         'FODO_index': 3,
-        #         'quad_type': 'defocusing',
-        #         'delta': 1e-7,
-        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     },
-        #     {
-        #         'FODO_index': 4,
-        #         'quad_type': 'defocusing',
-        #         'delta': 1e-7,
-        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     },
-        #     {
-        #         'FODO_index': 5,
-        #         'quad_type': 'defocusing',
-        #         'delta': 1e-7,
-        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     },
-        #     # {
-        #     #     'FODO_index': 6,
-        #     #     'quad_type': 'defocusing',
-        #     #     'delta': 1e-7,
-        #     #     'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     # },
-        #     {
-        #         'FODO_index': 7,
-        #         'quad_type': 'defocusing',
-        #         'delta': 1e-7,
-        #         'plane': 'vertical'  # 'horizontal' or 'vertical'
-        #     },
-        # ],
 
         "quad_tilt_errors": None,
         

@@ -230,6 +230,46 @@ class QuadrupoleTiltError:
         self.tilt_angle = tilt_angle
 
 
+class QuadrupoleKStochasticJitterError:
+    """
+    Stochastic jitter error for quadrupole focusing strength (k).
+    Applied randomly for each simulation run to ALL quadrupoles.
+    """
+    def __init__(self, jitter_fraction=0.01):
+        """
+        Parameters:
+            jitter_fraction (float): Fractional jitter (±jitter_fraction). 
+                                    Default ±1% = 0.01
+        """
+        if jitter_fraction < 0:
+            raise ValueError("jitter_fraction must be non-negative.")
+        self.jitter_fraction = jitter_fraction
+
+    def get_k_factor(self):
+        """Generate random jitter factor for this simulation run."""
+        return np.random.normal(-self.jitter_fraction, self.jitter_fraction)
+
+
+class QuadrupoleKSystemicDriftError:
+    """
+    Systemic drift error for quadrupole focusing strength (k).
+    Applied as a larger random variation to ALL quadrupoles (cumulative with jitter).
+    """
+    def __init__(self, drift_fraction=0.04):
+        """
+        Parameters:
+            drift_fraction (float): Fractional drift (±drift_fraction). 
+                                  Default ±4% = 0.04
+        """
+        if drift_fraction < 0:
+            raise ValueError("drift_fraction must be non-negative.")
+        self.drift_fraction = drift_fraction
+
+    def get_k_factor(self):
+        """Generate random drift factor for this simulation run."""
+        return np.random.normal(-self.drift_fraction, self.drift_fraction)
+
+
 class FODOCell4D:
     """
     Basic FODO cell: drift -> dipole -> drift -> quad -> ...
@@ -453,7 +493,8 @@ class SynchrotronSimulator:
                  horizontal_tune_range=(0.2, 0.8), vertical_tune_range=(0.2, 0.8), 
                  use_gpu_numba=False, use_gpu_torch=False, max_iter_per_infer=1,
                  use_memmap=False, memmap_dir=None,
-                 verbose=True, figs_save_dir='figs', correct_injection_offset=False):
+                 verbose=True, figs_save_dir='figs', correct_injection_offset=False,
+                 quad_k_stochastic_jitter=None, quad_k_systemic_drift=None):
         """
         Initialize the Synchrotron Simulator.
 
@@ -485,7 +526,27 @@ class SynchrotronSimulator:
             memmap_dir (str): Directory to store memory-mapped files. If None, uses system temp directory.
                 Useful for specifying a fast SSD location. Defaults to None.
             verbose (bool): If True, print progress and information about the lattice and the simulation
+            quad_k_stochastic_jitter (QuadrupoleKStochasticJitterError or None): Stochastic jitter error for quadrupole k.
+                If provided, applies random ±jitter_fraction variation to ALL quadrupoles for each simulation run.
+                Default: None (no stochastic jitter).
+            quad_k_systemic_drift (QuadrupoleKSystemicDriftError or None): Systemic drift error for quadrupole k.
+                If provided, applies random ±drift_fraction variation to ALL quadrupoles (cumulative with jitter).
+                Default: None (no systemic drift).
         """
+        # Store k variation error configurations
+        self.quad_k_stochastic_jitter = quad_k_stochastic_jitter
+        self.quad_k_systemic_drift = quad_k_systemic_drift
+        
+        # Compute k variation factors if errors are provided
+        self._k_variation_factor = 0.0  # Default: no variation
+        if self.quad_k_stochastic_jitter is not None:
+            self._k_variation_factor += self.quad_k_stochastic_jitter.get_k_factor()
+        if self.quad_k_systemic_drift is not None:
+            self._k_variation_factor += self.quad_k_systemic_drift.get_k_factor()
+        
+        if self._k_variation_factor != 0.0:
+            if self.verbose:
+                print(f"[K Variation] Applied k factor: {self._k_variation_factor:.4f} ({self._k_variation_factor*100:.2f}%)")
         # Design parameters
         self.design_radius = design_radius
         self.L_quad = L_quad
@@ -861,6 +922,15 @@ class SynchrotronSimulator:
             k_f_nominal = float(1 / self.f)
             k_d_nominal = float(-1 / self.f)
 
+        # Apply k variation factor (stochastic jitter + systemic drift) to ALL quadrupoles
+        # k_actual = k_nominal * (1 + k_variation_factor)
+        k_f_with_variation = k_f_nominal * (1.0 + self._k_variation_factor)
+        k_d_with_variation = k_d_nominal * (1.0 + self._k_variation_factor)
+        
+        if self._k_variation_factor != 0.0 and self.verbose:
+            print(f"[K Variation] Applied to quadrupoles: k_f = {k_f_with_variation:.6f} (nominal: {k_f_nominal:.6f}), "
+                  f"k_d = {k_d_with_variation:.6f} (nominal: {k_d_nominal:.6f})")
+
         # Adjusted drift lengths
         L_drift = self.L_drift
         # create the FODO cell object
@@ -869,8 +939,8 @@ class SynchrotronSimulator:
             L_drift=L_drift,
             L_dipole=self.L_dipole,
             theta_dipole=self.theta_dipole,
-            k_f=k_f_nominal,
-            k_d=k_d_nominal,
+            k_f=k_f_with_variation,
+            k_d=k_d_with_variation,
             rho=self.rho,
             k_nominal=self.k_nominal,
             use_thin_lens=self.use_thin_lens
@@ -2035,6 +2105,275 @@ class SynchrotronSimulator:
         # np.std(arr) computes over all elements without creating a copy
         self.epsilon_horizontal = np.std(self.bpm_readings['x'])
         self.epsilon_vertical = np.std(self.bpm_readings['y'])
+
+    def compute_beam_aperture(self, initial_amplitude_range=(1e-5, 1e-2), n_amplitude_points=50, 
+                              n_turns_for_tracking=100, verbose=True):
+        """
+        Compute the dynamic aperture of the lattice by tracking particles with varying amplitudes.
+        
+        The dynamic aperture defines the maximum stable oscillation amplitude for particles
+        in the storage ring. Beyond this aperture, particles are lost due to nonlinearities
+        or hit physical apertures.
+        
+        Parameters:
+            initial_amplitude_range (tuple): (min_amplitude, max_amplitude) in meters.
+                Defines the range of initial amplitudes to test.
+            n_amplitude_points (int): Number of amplitude points to test across the range.
+            n_turns_for_tracking (int): Number of turns to track each particle to determine stability.
+            verbose (bool): Whether to print progress information.
+            
+        Returns:
+            dict: Dictionary containing:
+                - 'amplitudes': Array of initial amplitudes tested (meters)
+                - 'survived_turns': Array of number of turns each particle survived
+                - 'dynamic_aperture': Estimated maximum stable amplitude (meters)
+                - 'survival_fraction': Fraction of turns survived relative to n_turns_for_tracking
+        """
+        if verbose:
+            print(f"\nComputing dynamic aperture...")
+            print(f"  Amplitude range: {initial_amplitude_range[0]:.2e} to {initial_amplitude_range[1]:.2e} m")
+            print(f"  Amplitude points: {n_amplitude_points}")
+            print(f"  Tracking turns: {n_turns_for_tracking}")
+        
+        # Generate amplitude points (logarithmic spacing for better coverage)
+        amplitudes = np.logspace(np.log10(initial_amplitude_range[0]), 
+                                 np.log10(initial_amplitude_range[1]), 
+                                 n_amplitude_points)
+        
+        # Track survival for each amplitude
+        survived_turns = np.zeros(n_amplitude_points)
+        
+        # Use the lattice to track particles
+        for amp_idx, amplitude in enumerate(amplitudes):
+            if verbose and amp_idx % 10 == 0:
+                print(f"  Testing amplitude {amp_idx+1}/{n_amplitude_points}: {amplitude:.2e} m")
+            
+            # Initialize particle at this amplitude (horizontal plane)
+            initial_state = np.array([amplitude, 0.0, 0.0, 0.0], dtype=np.float64)
+            
+            # Track particle
+            state = initial_state.copy()
+            turns_survived = 0
+            
+            for turn in range(n_turns_for_tracking):
+                for cell_index in range(self.n_FODO):
+                    n_elems = self.len_per_cell_list[cell_index]
+                    for elem_in_cell in range(n_elems):
+                        global_elem_idx = sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
+                        
+                        M_4x4 = self.M_lattice_4x4[global_elem_idx]
+                        D_4x1 = self.D_lattice_4x1[global_elem_idx]
+                        
+                        # Linear propagation
+                        state = M_4x4 @ state + D_4x1
+                        
+                        # Check if particle is lost (exceeded physical aperture)
+                        # Use a reasonable physical aperture (e.g., 50mm = 0.05m)
+                        physical_aperture = 0.05  # 50 mm
+                        if np.abs(state[0]) > physical_aperture or np.abs(state[2]) > physical_aperture:
+                            break
+                    
+                    if np.abs(state[0]) > physical_aperture or np.abs(state[2]) > physical_aperture:
+                        break
+                
+                if np.abs(state[0]) > physical_aperture or np.abs(state[2]) > physical_aperture:
+                    break
+                    
+                turns_survived += 1
+            
+            survived_turns[amp_idx] = turns_survived
+        
+        # Calculate survival fraction
+        survival_fraction = survived_turns / n_turns_for_tracking
+        
+        # Determine dynamic aperture: amplitude where particle survives > 90% of turns
+        stable_mask = survival_fraction >= 0.9
+        if np.any(stable_mask):
+            dynamic_aperture = amplitudes[stable_mask][0]  # First stable amplitude
+        else:
+            # If no stable region found, use the maximum amplitude that had any survival
+            dynamic_aperture = amplitudes[np.argmax(survived_turns)]
+        
+        if verbose:
+            print(f"\n  Dynamic aperture (90% survival): {dynamic_aperture:.2e} m")
+            print(f"  Maximum turns survived: {int(np.max(survived_turns))}")
+        
+        # Store results
+        self.dynamic_aperture_results = {
+            'amplitudes': amplitudes,
+            'survived_turns': survived_turns,
+            'dynamic_aperture': dynamic_aperture,
+            'survival_fraction': survival_fraction,
+            'physical_aperture': 0.05  # 50 mm
+        }
+        
+        return self.dynamic_aperture_results
+
+    def plot_dynamic_aperture(self, save_label='0', figsize=(10, 6)):
+        """
+        Plot the dynamic aperture calculation results.
+        
+        Parameters:
+            save_label (str): Label for saved figure filename.
+            figsize (tuple): Figure size in inches.
+        """
+        if not hasattr(self, 'dynamic_aperture_results'):
+            print("No dynamic aperture results available. Run compute_beam_aperture() first.")
+            return
+        
+        results = self.dynamic_aperture_results
+        amplitudes = results['amplitudes']
+        survival_fraction = results['survival_fraction']
+        dynamic_aperture = results['dynamic_aperture']
+        
+        plt.figure(figsize=figsize)
+        plt.semilogx(amplitudes, survival_fraction * 100, 'b-o', markersize=4)
+        plt.axhline(y=90, color='r', linestyle='--', label='90% survival threshold')
+        plt.axvline(x=dynamic_aperture, color='g', linestyle='--', 
+                   label=f'Dynamic aperture = {dynamic_aperture:.2e} m')
+        
+        plt.xlabel('Initial Amplitude (m)', fontsize=12)
+        plt.ylabel('Survival Fraction (%)', fontsize=12)
+        plt.title('Dynamic Aperture Analysis', fontsize=14)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        
+        plt.savefig(f"{self.figs_save_dir}/dynamic_aperture_{save_label}.eps", 
+                   bbox_inches='tight', format='eps')
+        plt.show()
+
+    def detect_beam_loss(self, state, aperture_threshold=0.05):
+        """
+        Detect if a particle has been lost (exceeded the physical aperture).
+        
+        Parameters:
+            state (np.ndarray): Particle state [x, xp, y, yp].
+            aperture_threshold (float): Physical aperture radius in meters.
+            
+        Returns:
+            bool: True if particle is lost, False otherwise.
+        """
+        # Check horizontal and vertical positions against aperture
+        if np.abs(state[0]) > aperture_threshold or np.abs(state[2]) > aperture_threshold:
+            return True
+        return False
+
+    def simulate_with_beam_loss(self, initial_states, aperture_threshold=0.05, 
+                                regenerate_lost_particles=True, max_regenerations=3,
+                                verbose=True):
+        """
+        Simulate particle motion with beam loss detection and optional regeneration.
+        
+        This method tracks particles and can regenerate lost particles with new 
+        initial conditions to maintain beam intensity.
+        
+        Parameters:
+            initial_states (np.ndarray): Initial particle states [N, 4] where N is number of particles.
+            aperture_threshold (float): Physical aperture radius in meters for loss detection.
+            regenerate_lost_particles (bool): If True, regenerate lost particles with new initial conditions.
+            max_regenerations (int): Maximum number of times to regenerate lost particles per particle.
+            verbose (bool): Whether to print progress information.
+            
+        Returns:
+            dict: Dictionary containing:
+                - 'final_states': Final particle states after simulation
+                - 'loss_statistics': Dictionary with loss information
+                - 'regeneration_history': List of regeneration events (if enabled)
+        """
+        if verbose:
+            print(f"\nRunning simulation with beam loss detection...")
+            print(f"  Aperture threshold: {aperture_threshold*1000:.1f} mm")
+            print(f"  Regeneration enabled: {regenerate_lost_particles}")
+        
+        n_particles = len(initial_states)
+        n_turns = self.n_turns
+        
+        # Initialize tracking arrays
+        current_states = initial_states.copy()
+        all_states = np.zeros((n_particles, n_turns, 4), dtype=np.float64)
+        
+        # Loss tracking
+        lost_particles = np.zeros(n_particles, dtype=bool)
+        first_loss_turn = np.full(n_particles, n_turns, dtype=int)
+        regeneration_count = np.zeros(n_particles, dtype=int)
+        regeneration_history = []
+        
+        # Track particles
+        for turn in range(n_turns):
+            for p_idx in range(n_particles):
+                if lost_particles[p_idx]:
+                    # Particle already lost, skip tracking
+                    continue
+                    
+                state = current_states[p_idx].copy()
+                
+                # Track through lattice
+                for cell_index in range(self.n_FODO):
+                    n_elems = self.len_per_cell_list[cell_index]
+                    for elem_in_cell in range(n_elems):
+                        global_elem_idx = sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
+                        
+                        M_4x4 = self.M_lattice_4x4[global_elem_idx]
+                        D_4x1 = self.D_lattice_4x1[global_elem_idx]
+                        
+                        state = M_4x4 @ state + D_4x1
+                
+                # Check for beam loss
+                if self.detect_beam_loss(state, aperture_threshold):
+                    lost_particles[p_idx] = True
+                    first_loss_turn[p_idx] = turn
+                    
+                    if regenerate_lost_particles and regeneration_count[p_idx] < max_regenerations:
+                        # Regenerate particle with small random offset from original
+                        regeneration_count[p_idx] += 1
+                        new_state = initial_states[p_idx].copy()
+                        # Add small random perturbation
+                        new_state[0] += np.random.normal(0, 1e-5)
+                        new_state[2] += np.random.normal(0, 1e-5)
+                        current_states[p_idx] = new_state
+                        lost_particles[p_idx] = False  # Reset loss status
+                        regeneration_history.append({
+                            'particle': p_idx,
+                            'original_turn': turn,
+                            'regeneration_number': regeneration_count[p_idx]
+                        })
+                        if verbose:
+                            print(f"  Particle {p_idx} lost at turn {turn}, regenerated ( #{regeneration_count[p_idx]})")
+                else:
+                    current_states[p_idx] = state
+                
+                # Store state
+                all_states[p_idx, turn, :] = current_states[p_idx]
+        
+        # Calculate statistics
+        n_lost = np.sum(lost_particles)
+        loss_fraction = n_lost / n_particles
+        avg_turns_survived = np.mean(first_loss_turn[~lost_particles]) if np.any(~lost_particles) else 0
+        
+        loss_statistics = {
+            'n_particles': n_particles,
+            'n_lost': n_lost,
+            'loss_fraction': loss_fraction,
+            'first_loss_turn': first_loss_turn,
+            'lost_particles': lost_particles,
+            'regeneration_count': regeneration_count,
+            'total_regenerations': len(regeneration_history),
+            'avg_turns_survived': avg_turns_survived
+        }
+        
+        if verbose:
+            print(f"\nBeam loss simulation complete:")
+            print(f"  Particles lost: {n_lost}/{n_particles} ({loss_fraction*100:.1f}%)")
+            print(f"  Total regenerations: {len(regeneration_history)}")
+            print(f"  Average turns survived: {avg_turns_survived:.1f}")
+        
+        return {
+            'final_states': current_states,
+            'loss_statistics': loss_statistics,
+            'regeneration_history': regeneration_history,
+            'all_states': all_states
+        }
 
     def plot_ring(self, ax=None, plot_xlim=None, plot_ylim=None):
         """Plot the ring and elements with start of each FODO cell indicated and BPMs rotated perpendicular to the ring."""
