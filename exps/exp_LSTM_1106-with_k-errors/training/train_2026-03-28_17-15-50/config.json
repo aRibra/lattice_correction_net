@@ -1,0 +1,548 @@
+{
+    "data_shapes": {
+        "inputs_shape": [
+            995,
+            100,
+            16
+        ],
+        "targets_shape": [
+            995,
+            6
+        ],
+        "raw_input_tensors_shape": [
+            1106,
+            100,
+            8,
+            2
+        ]
+    },
+    "data_sub_cfg": {
+        "merged_config": {
+            "p": 5.344286e-19,
+            "G": 1.0,
+            "q": 1.602e-19,
+            "n_turns": 6000,
+            "num_particles": 300,
+            "window_size": 0,
+            "use_thin_lens": true,
+            "x0_mean_std": [
+                0.0,
+                0.05
+            ],
+            "xp0_mean_std": [
+                0.0,
+                0.0
+            ],
+            "y0_mean_std": [
+                0.0,
+                0.05
+            ],
+            "yp0_mean_std": [
+                0.0,
+                0.0
+            ],
+            "particles_sampling_method": "from_twiss_params",
+            "correct_injection_offset": false,
+            "sampling_circle_radius": 0.01,
+            "mag_field_range": [
+                0.1,
+                2.0
+            ],
+            "dipole_length_range": [
+                0.2,
+                14.0
+            ],
+            "horizontal_tune_range": [
+                0.1,
+                0.8
+            ],
+            "vertical_tune_range": [
+                0.1,
+                0.8
+            ],
+            "total_dipole_bending_angle_range": [
+                4.71238898038469,
+                6.283185307179586
+            ],
+            "use_gpu_torch": true,
+            "max_iter_per_infer": 2000,
+            "verbose": true,
+            "figs_save_dir": "exps/test/run_2026-03-28_17-15-46/figs",
+            "target_data": "quad_misalign_deltas",
+            "reject_multiple_error_types": false,
+            "start_rev": 5900,
+            "end_rev": 6000,
+            "apply_avg": false,
+            "include_no_error_data": false,
+            "fodo_cell_indices": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+            ],
+            "planes": [
+                "x",
+                "y"
+            ],
+            "random_criterion": "normal",
+            "delta_range": [
+                0,
+                5e-05
+            ],
+            "quad_tilt_angle_range": [
+                0,
+                0.01
+            ],
+            "dipole_tilt_angle_range": [
+                0,
+                0.05
+            ],
+            "com_delta_range": [
+                -5e-05,
+                5e-05
+            ],
+            "config_name": "Configuration 1",
+            "design_radius": 20.0,
+            "n_FODO": 8,
+            "f": 3.336008739076155,
+            "L_quad": 0.4,
+            "quad_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "delta": -1.3513353963286401e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 2,
+                    "quad_type": "defocusing",
+                    "delta": 4.906792300332081e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "delta": 2.6724617233527e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 4,
+                    "quad_type": "defocusing",
+                    "delta": -4.727268837007195e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 5,
+                    "quad_type": "defocusing",
+                    "delta": 7.922035390444068e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 7,
+                    "quad_type": "defocusing",
+                    "delta": 4.2113027715689235e-05,
+                    "plane": "vertical"
+                }
+            ],
+            "k_errors": {
+                "enabled": true,
+                "k_systemic_drift_fraction_range": [
+                    0.04,
+                    0.04
+                ],
+                "k_stochastic_jitter_fraction_range": [
+                    0.005,
+                    0.01
+                ],
+                "k_error_cells": [
+                    {
+                        "FODO_index": 0,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 0,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 1,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 1,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 2,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 2,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 3,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 3,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 4,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 4,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 5,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 5,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 6,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 6,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 7,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 7,
+                        "quad_type": "defocusing"
+                    }
+                ]
+            },
+            "quad_tilt_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.01810639108296922
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.012416294544944168
+                },
+                {
+                    "FODO_index": 6,
+                    "quad_type": "defocusing",
+                    "tilt_angle": 0.00865629443074866
+                }
+            ],
+            "dipole_tilt_errors": null,
+            "L_straight": 3.9269908169872423,
+            "L_dipole": 5.890486225480862,
+            "n_Dipoles": 16,
+            "L_drift": 0.7817477042468106,
+            "Qx": 0.4677523855413337,
+            "Qy": 0.17971989927789359,
+            "B": 0.16680043695380775,
+            "B_rho": 3.336008739076155,
+            "total_dipole_bending_angle": 4.71238898038469
+        },
+        "input_scaler_config": {
+            "min_": [
+                0.007916311735411963,
+                -0.004915383155010722
+            ],
+            "scale_": [
+                6.076311948166558e-38,
+                524.0318691889364
+            ],
+            "data_min_": [
+                -1.6587632766937458e+37,
+                -0.0018989009549841285
+            ],
+            "data_max_": [
+                1.6327069721361746e+37,
+                0.0019176608184352517
+            ],
+            "data_range_": [
+                3.2914702488299204e+37,
+                0.00381656177341938
+            ],
+            "feature_range": [
+                -1,
+                1
+            ]
+        },
+        "target_scaler_config": {
+            "min_": [
+                0.03725808511952233,
+                0.08688207932372727,
+                0.02605667908283471,
+                0.05208739358703163,
+                0.001972479254977122,
+                0.11853611221365368
+            ],
+            "scale_": [
+                6459.3799696222595,
+                6719.961629430996,
+                6631.598963930225,
+                5495.645654192341,
+                5614.951731515345,
+                5773.269394167971
+            ],
+            "data_min_": [
+                -0.00016058167966548353,
+                -0.0001617393281776458,
+                -0.00015472236555069685,
+                -0.0001914401800604537,
+                -0.0001784472115105018,
+                -0.0001937439665198326
+            ],
+            "data_max_": [
+                0.00014904556155670434,
+                0.00013588141882792115,
+                0.00014686402573715895,
+                0.00017248430231120437,
+                0.00017774463049136102,
+                0.00015268019342329353
+            ],
+            "data_range_": [
+                0.0003096272412221879,
+                0.00029762074700556695,
+                0.0003015863912878558,
+                0.0003639244823716581,
+                0.0003561918420018628,
+                0.00034642415994312614
+            ],
+            "feature_range": [
+                -1,
+                1
+            ]
+        },
+        "overridden_base_config": {
+            "config_name": "Configuration 1",
+            "design_radius": 20.0,
+            "n_FODO": 8,
+            "f": 3.336008739076155,
+            "L_quad": 0.4,
+            "quad_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "delta": -1.3513353963286401e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 2,
+                    "quad_type": "defocusing",
+                    "delta": 4.906792300332081e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "delta": 2.6724617233527e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 4,
+                    "quad_type": "defocusing",
+                    "delta": -4.727268837007195e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 5,
+                    "quad_type": "defocusing",
+                    "delta": 7.922035390444068e-05,
+                    "plane": "vertical"
+                },
+                {
+                    "FODO_index": 7,
+                    "quad_type": "defocusing",
+                    "delta": 4.2113027715689235e-05,
+                    "plane": "vertical"
+                }
+            ],
+            "k_errors": {
+                "enabled": true,
+                "k_systemic_drift_fraction_range": [
+                    0.04,
+                    0.04
+                ],
+                "k_stochastic_jitter_fraction_range": [
+                    0.005,
+                    0.01
+                ],
+                "k_error_cells": [
+                    {
+                        "FODO_index": 0,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 0,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 1,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 1,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 2,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 2,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 3,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 3,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 4,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 4,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 5,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 5,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 6,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 6,
+                        "quad_type": "defocusing"
+                    },
+                    {
+                        "FODO_index": 7,
+                        "quad_type": "focusing"
+                    },
+                    {
+                        "FODO_index": 7,
+                        "quad_type": "defocusing"
+                    }
+                ]
+            },
+            "quad_tilt_errors": [
+                {
+                    "FODO_index": 1,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.01810639108296922
+                },
+                {
+                    "FODO_index": 3,
+                    "quad_type": "defocusing",
+                    "tilt_angle": -0.012416294544944168
+                },
+                {
+                    "FODO_index": 6,
+                    "quad_type": "defocusing",
+                    "tilt_angle": 0.00865629443074866
+                }
+            ],
+            "dipole_tilt_errors": null,
+            "L_straight": 3.9269908169872423,
+            "L_dipole": 5.890486225480862,
+            "n_Dipoles": 16,
+            "L_drift": 0.7817477042468106,
+            "Qx": 0.4677523855413337,
+            "Qy": 0.17971989927789359,
+            "B": 0.16680043695380775,
+            "B_rho": 3.336008739076155,
+            "G": 1.0,
+            "p": 5.344286e-19,
+            "q": 1.602e-19,
+            "total_dipole_bending_angle": 4.71238898038469,
+            "figs_save_dir": "exps/test/run_2026-03-28_17-15-46/figs"
+        }
+    },
+    "data_sizes": {
+        "train_batch_size": 16,
+        "validation_batch_size": 16,
+        "train_dataset_size": 995,
+        "validation_dataset_size": 111
+    },
+    "network_topology": {
+        "input_shape": [
+            -1,
+            100,
+            16
+        ],
+        "output_shape": [
+            -1,
+            6
+        ]
+    },
+    "training_parameters": {
+        "num_epochs": 900,
+        "batch_size": 16,
+        "optimizer": "Adam",
+        "learning_rate": 0.001,
+        "criterion": "MSELoss",
+        "scheduler": "CyclicLR"
+    },
+    "device": "cuda",
+    "random_seed": 3491955018031449298,
+    "timestamp": "2026-03-28_17-15-50",
+    "model_type": "QuadErrorCorrectionLSTM",
+    "model_parameters": {
+        "input_size": 16,
+        "hidden_size": 256,
+        "num_layers": 1,
+        "output_size": null,
+        "is_bidirectional": true
+    },
+    "optimizer_type": "Adam",
+    "optimizer_params": {
+        "lr": 0.001,
+        "betas": [
+            0.9,
+            0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": 0,
+        "amsgrad": false,
+        "maximize": false,
+        "foreach": null,
+        "capturable": false,
+        "differentiable": false,
+        "fused": null
+    },
+    "scheduler_type": "CyclicLR",
+    "scheduler_params": {
+        "base_lr": 1e-10,
+        "max_lr": 0.001,
+        "mode": "triangular2",
+        "cycle_momentum": true,
+        "base_momentum": 0.8,
+        "max_momentum": 0.9
+    },
+    "criterion_type": "MSELoss",
+    "training_hyperparameters": {
+        "num_epochs": 900,
+        "nb_epoch_log": 10
+    }
+}
