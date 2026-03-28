@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib
+matplotlib.use('Agg')
 
 from sim_config import SAVE_DIR_BENCHMARKS, SHOW_PLOTS
 from net import build_model, train_model

@@ -39,6 +39,7 @@ Particle accelerators rely on precisely tuned magnets placed on the lattice to c
    ```
    pip install -r requirements.txt
    ```
+
 ## Key Files
 
 - `main.py`: Entry point for generating data, training, evaluation, and benchmarking.
@@ -51,33 +52,51 @@ Particle accelerators rely on precisely tuned magnets placed on the lattice to c
 
 ## Usage
 
-The `main.py` script lets you generate data, train a model, evaluate it, and run benchmarks. Control its behavior with command-line arguments.
+The `main.py` script uses subcommands for different operations: `generate`, `train`, `evaluate`, `benchmark`.
 
 ### Examples
 
-- **Generate Data & Train:**
+- **Generate Data:**
 
   ```bash
-  python main.py --generate-data --prepare-data --train --num-epochs 900 --n-simulations 1000 --batch-size 16 --test-size 0.10
+  python3 main.py generate --n-simulations 2000
   ```
 
-- **Load Data & Evaluate:**
+- **Train Model:**
 
   ```bash
-  python main.py --load-data --data-dir /path/to/data --load-checkpoint --evaluate --benchmark --benchmark-type quad_tilt
+  python3 main.py train --data-dir data/your_dataset --epochs 900 --batch-size 16
   ```
 
-### Key Options
+- **Evaluate Model:**
 
-- `--generate-data`: Generate simulation data.
-- `--load-data`: Load data from a directory (use with `--data-dir`).
-- `--prepare-data`: Prepare data for training/inference.
-- `--train`: Train a new model.
-- `--load-checkpoint`: Load an existing model checkpoint.
-- `--evaluate`: Evaluate the model.
-- `--benchmark`: Run benchmarks.
-- `--model-arch`: Set model architecture (`LSTM`, `SIMPLE_FULLY_CONNECTED`).
-- `--num-epochs`: Number of training epochs.
-- `--batch-size`: Batch size.
-- `--benchmark-type`: Benchmark type (`bpm` or `quad_tilt`).
+  ```bash
+  python3 main.py evaluate --model-dir exps/your_experiment/training
+  ```
+
+- **Run Benchmark:**
+
+  ```bash
+  python3 main.py benchmark --model-dir exps/your_experiment/training --type quad_tilt
+  ```
+
+### Key Subcommands and Options
+
+**Generate:**
+- `--n-simulations`, `-n`: Number of simulations (default: 1000)
+
+**Train:**
+- `--data-dir`, `-d`: Data directory (required)
+- `--model-arch`, `-m`: Model architecture (`LSTM`, `SIMPLE_FULLY_CONNECTED`, `SIMPLE_CNN`)
+- `--epochs`, `-e`: Number of training epochs (default: 900)
+- `--batch-size`, `-b`: Batch size (default: 16)
+- `--test-size`, `-t`: Test/validation split (default: 0.10)
+- `--learning-rate`, `-lr`: Learning rate (default: 0.001)
+
+**Evaluate:**
+- `--model-dir`: Path to trained model directory
+
+**Benchmark:**
+- `--model-dir`: Path to trained model directory
+- `--type`: Benchmark type (`bpm` or `quad_tilt`)
 

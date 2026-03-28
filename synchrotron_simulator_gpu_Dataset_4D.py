@@ -2,34 +2,32 @@
 
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
 import seaborn as sns
 import traceback
-from numba import njit, prange
-from numba import cuda, float64
 import torch
-import matplotlib.cm as cm
 import psutil
 import gc
 
-
 # Define color palette for plotting
-prop_cycle = plt.rcParams['axes.prop_cycle']
-base_colors_cycle = prop_cycle.by_key()['color']
+prop_cycle = plt.rcParams["axes.prop_cycle"]
+base_colors_cycle = prop_cycle.by_key()["color"]
+
 
 def split_merged_config(merged_config):
     # base_configurations keys
     base_keys = {
-        'config_name',
-        'design_radius',
-        'n_FODO',
-        'f',
-        'L_quad',
-        'L_straight',
-        'quad_errors',
-        'quad_tilt_errors',
-        'dipole_tilt_errors'
+        "config_name",
+        "design_radius",
+        "n_FODO",
+        "f",
+        "L_quad",
+        "L_straight",
+        "quad_errors",
+        "quad_tilt_errors",
+        "dipole_tilt_errors",
     }
 
     # Extract base configuration parameters
@@ -56,13 +54,14 @@ def drift_4x4(L):
     (x -> x + L*x', y -> y + L*y')
     """
     M = np.identity(4, dtype=np.float64)
-    M[0,1] = L
-    M[2,3] = L
+    M[0, 1] = L
+    M[2, 3] = L
     return M
+
 
 def quad_transfer_matrix_4x4(k, L, thin_lens=False):
     """
-    Return the 4x4 transfer matrix for a quadrupole of focal strength k (1/m^2) 
+    Return the 4x4 transfer matrix for a quadrupole of focal strength k (1/m^2)
     and length L, either thick-lens or thin-lens.
     - If k > 0 => focusing in x-plane, defocusing in y-plane
     - If k < 0 => defocusing in x-plane, focusing in y-plane
@@ -73,8 +72,8 @@ def quad_transfer_matrix_4x4(k, L, thin_lens=False):
         # x-plane focal kick: x' -> x' - k*L*x
         # y-plane defocusing: y' -> y' + k*L*y
         # This is a linear approximation ignoring cross-plane coupling beyond sign swap:
-        M[1,0] = -k*L   # focusing in x
-        M[3,2] =  k*L   # defocusing in y
+        M[1, 0] = -k * L  # focusing in x
+        M[3, 2] = k * L  # defocusing in y
         return M
 
     # --- Thick-lens quadrupole: block-by-block approach ---
@@ -86,19 +85,19 @@ def quad_transfer_matrix_4x4(k, L, thin_lens=False):
         sqrt_kx = np.sqrt(abs(kx))
         if kx > 0:
             # focusing in x
-            M[0,0] = np.cos(sqrt_kx*L)
-            M[0,1] = np.sin(sqrt_kx*L)/sqrt_kx
-            M[1,0] = -sqrt_kx*np.sin(sqrt_kx*L)
-            M[1,1] = np.cos(sqrt_kx*L)
+            M[0, 0] = np.cos(sqrt_kx * L)
+            M[0, 1] = np.sin(sqrt_kx * L) / sqrt_kx
+            M[1, 0] = -sqrt_kx * np.sin(sqrt_kx * L)
+            M[1, 1] = np.cos(sqrt_kx * L)
         else:
             # defocusing in x => cosh, sinh
-            M[0,0] = np.cosh(sqrt_kx*L)
-            M[0,1] = np.sinh(sqrt_kx*L)/sqrt_kx
-            M[1,0] = sqrt_kx*np.sinh(sqrt_kx*L)
-            M[1,1] = np.cosh(sqrt_kx*L)
+            M[0, 0] = np.cosh(sqrt_kx * L)
+            M[0, 1] = np.sinh(sqrt_kx * L) / sqrt_kx
+            M[1, 0] = sqrt_kx * np.sinh(sqrt_kx * L)
+            M[1, 1] = np.cosh(sqrt_kx * L)
     else:
         # k ~ 0 => drift
-        M[0,1] = L
+        M[0, 1] = L
 
     # y-plane sub-block (rows 2-3, cols 2-3) for -k
     ky = -k
@@ -106,58 +105,57 @@ def quad_transfer_matrix_4x4(k, L, thin_lens=False):
         sqrt_ky = np.sqrt(abs(ky))
         if ky > 0:
             # focusing in y
-            M[2,2] = np.cos(sqrt_ky*L)
-            M[2,3] = np.sin(sqrt_ky*L)/sqrt_ky
-            M[3,2] = -sqrt_ky*np.sin(sqrt_ky*L)
-            M[3,3] = np.cos(sqrt_ky*L)
+            M[2, 2] = np.cos(sqrt_ky * L)
+            M[2, 3] = np.sin(sqrt_ky * L) / sqrt_ky
+            M[3, 2] = -sqrt_ky * np.sin(sqrt_ky * L)
+            M[3, 3] = np.cos(sqrt_ky * L)
         else:
             # defocusing in y => cosh, sinh
-            M[2,2] = np.cosh(sqrt_ky*L)
-            M[2,3] = np.sinh(sqrt_ky*L)/sqrt_ky
-            M[3,2] = sqrt_ky*np.sinh(sqrt_ky*L)
-            M[3,3] = np.cosh(sqrt_ky*L)
+            M[2, 2] = np.cosh(sqrt_ky * L)
+            M[2, 3] = np.sinh(sqrt_ky * L) / sqrt_ky
+            M[3, 2] = sqrt_ky * np.sinh(sqrt_ky * L)
+            M[3, 3] = np.cosh(sqrt_ky * L)
     else:
         # ky ~ 0 => drift
-        M[2,3] = L
+        M[2, 3] = L
 
     return M
+
 
 def pure_sector_dipole_4x4(L, rho):
     """
     4x4 transfer matrix for a pure sector dipole (no quadrupole component).
-    
+
     Parameters:
         L (float):   Length of the dipole [m].
         rho (float): Bending radius [m].
-        
+
     Returns:
         M_4x4 (ndarray): 4x4 transfer matrix.
         theta (float):    Bending angle [rad] (theta = L / rho).
         D4 (ndarray):     Zero 4-vector (no inhomogeneous terms).
     """
     theta = L / rho  # Bending angle
-    
+
     # Horizontal plane (bending dynamics)
-    Mx = np.array([
-        [np.cos(theta),       rho * np.sin(theta)],
-        [-np.sin(theta)/rho,  np.cos(theta)     ]
-    ], dtype=np.float64)
-    
+    Mx = np.array(
+        [[np.cos(theta), rho * np.sin(theta)], [-np.sin(theta) / rho, np.cos(theta)]],
+        dtype=np.float64,
+    )
+
     # Vertical plane (drift)
-    My = np.array([
-        [1.0, L],
-        [0.0, 1.0]
-    ], dtype=np.float64)
-    
+    My = np.array([[1.0, L], [0.0, 1.0]], dtype=np.float64)
+
     # Block-diagonal 4x4 matrix
     M_4x4 = np.zeros((4, 4), dtype=np.float64)
     M_4x4[0:2, 0:2] = Mx  # Horizontal block
     M_4x4[2:4, 2:4] = My  # Vertical block
-    
+
     # No dipole kick (homogeneous solution)
     D4 = np.zeros(4, dtype=np.float64)
-    
+
     return M_4x4
+
 
 def tilt_4x4(phi):
     """
@@ -165,24 +163,9 @@ def tilt_4x4(phi):
     """
     c = np.cos(phi)
     s = np.sin(phi)
-    return np.array([
-        [ c,  0,  s,  0],
-        [ 0,  c,  0,  s],
-        [-s, 0,  c,  0],
-        [ 0,-s,  0,  c]
-    ], dtype=np.float64)
-
-def make_tilt_element_4x4(tilt_angle, description="Tilt Error"):
-    """
-    Create a zero-length element representing a magnet tilt by `tilt_angle`.
-    M_4x4 = tilt_4x4(tilt_angle).
-    """
-    return {
-        'element_type': 'TiltError',
-        'description': description,
-        'M_4x4': tilt_4x4(tilt_angle),
-        's_elem': 0.0,
-    }
+    return np.array(
+        [[c, 0, s, 0], [0, c, 0, s], [-s, 0, c, 0], [0, -s, 0, c]], dtype=np.float64
+    )
 
 
 class QuadrupoleMisAlignError:
@@ -197,15 +180,18 @@ class QuadrupoleMisAlignError:
             plane (str): 'horizontal' or 'vertical' indicating which plane to apply the error.
         """
         if delta > 1:
-            raise ValueError(f"Quadrupole displacement delta={delta} m exceeds the stability limit of 1e-4 m.")
-        if quad_type.lower() not in ['focusing', 'defocusing']:
+            raise ValueError(
+                f"Quadrupole displacement delta={delta} m exceeds the stability limit of 1e-4 m."
+            )
+        if quad_type.lower() not in ["focusing", "defocusing"]:
             raise ValueError("quad_type must be either 'focusing' or 'defocusing'.")
-        if plane.lower() not in ['horizontal', 'vertical']:
+        if plane.lower() not in ["horizontal", "vertical"]:
             raise ValueError("plane must be either 'horizontal' or 'vertical'.")
         self.FODO_index = FODO_index
         self.quad_type = quad_type.lower()
         self.delta = delta
         self.plane = plane.lower()
+
 
 class DipoleTiltError:
     def __init__(self, FODO_index, dipole_index, tilt_angle):
@@ -217,6 +203,7 @@ class DipoleTiltError:
         self.FODO_index = FODO_index
         self.dipole_index = dipole_index
         self.tilt_angle = tilt_angle
+
 
 class QuadrupoleTiltError:
     def __init__(self, FODO_index, quad_type, tilt_angle):
@@ -235,10 +222,11 @@ class QuadrupoleKStochasticJitterError:
     Stochastic jitter error for quadrupole focusing strength (k).
     Applied randomly for each simulation run to ALL quadrupoles.
     """
+
     def __init__(self, jitter_fraction=0.01):
         """
         Parameters:
-            jitter_fraction (float): Fractional jitter (±jitter_fraction). 
+            jitter_fraction (float): Fractional jitter (±jitter_fraction).
                                     Default ±1% = 0.01
         """
         if jitter_fraction < 0:
@@ -247,7 +235,14 @@ class QuadrupoleKStochasticJitterError:
 
     def get_k_factor(self):
         """Generate random jitter factor for this simulation run."""
-        return np.random.normal(-self.jitter_fraction, self.jitter_fraction)
+        # Generate Gaussian noise (sigma = jitter_fraction)
+        raw_noise = np.random.normal(loc=0.0, scale=self.jitter_fraction)
+
+        # Clip it at 1-sigma (e.g., max ±1%) to prevent 'inf' beam loss
+        # Adjustable the multiplier (like 1.5 or 2.0) based on the lattice's stability limit
+        max_allowed_error = self.jitter_fraction * 1.0
+
+        return np.clip(raw_noise, -max_allowed_error, max_allowed_error)
 
 
 class QuadrupoleKSystemicDriftError:
@@ -255,10 +250,11 @@ class QuadrupoleKSystemicDriftError:
     Systemic drift error for quadrupole focusing strength (k).
     Applied as a larger random variation to ALL quadrupoles (cumulative with jitter).
     """
+
     def __init__(self, drift_fraction=0.04):
         """
         Parameters:
-            drift_fraction (float): Fractional drift (±drift_fraction). 
+            drift_fraction (float): Fractional drift (±drift_fraction).
                                   Default ±4% = 0.04
         """
         if drift_fraction < 0:
@@ -266,8 +262,15 @@ class QuadrupoleKSystemicDriftError:
         self.drift_fraction = drift_fraction
 
     def get_k_factor(self):
-        """Generate random drift factor for this simulation run."""
-        return np.random.normal(-self.drift_fraction, self.drift_fraction)
+        """Generate random drift factor, clipped to a safe maximum."""
+        # Generate Gaussian noise (sigma = drift_fraction)
+        raw_noise = np.random.normal(loc=0.0, scale=self.drift_fraction)
+
+        # Clip it at 1-sigma (e.g., max ±4%) to prevent 'inf' beam loss
+        # Adjustable the multiplier (like 1.5 or 2.0) based on the lattice's stability limit
+        max_allowed_error = self.drift_fraction * 1
+
+        return np.clip(raw_noise, -max_allowed_error, max_allowed_error)
 
 
 class FODOCell4D:
@@ -275,10 +278,21 @@ class FODOCell4D:
     Basic FODO cell: drift -> dipole -> drift -> quad -> ...
     returning 4x4 matrices for each element
     """
-    def __init__(self, L_quad, L_drift, L_dipole, theta_dipole,
-                 k_f, k_d, rho, k_nominal, use_thin_lens=False):
-        self.L_quad   = L_quad
-        self.L_drift  = L_drift
+
+    def __init__(
+        self,
+        L_quad,
+        L_drift,
+        L_dipole,
+        theta_dipole,
+        k_f,
+        k_d,
+        rho,
+        k_nominal,
+        use_thin_lens=False,
+    ):
+        self.L_quad = L_quad
+        self.L_drift = L_drift
         self.L_dipole = L_dipole
         self.theta_dipole = theta_dipole
         self.k_f = k_f
@@ -310,191 +324,140 @@ class FODOCell4D:
 
         # 1) Drift
         Md = drift_4x4(self.L_drift)
-        elements.append({
-            'element_type': 'Drift',
-            'description': 'Drift Before Dipole #0',
-            'M_4x4': Md,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_drift
-        })
+        elements.append(
+            {
+                "element_type": "Drift",
+                "description": "Drift Before Dipole #0",
+                "M_4x4": Md,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_drift,
+            }
+        )
 
         # 2) Dipole #0
         M_d0 = pure_sector_dipole_4x4(self.L_dipole, self.rho)
 
-        elements.append({
-            'element_type': 'Dipole',
-            'description': 'Dipole #0',
-            'M_4x4': M_d0,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_dipole
-        })
+        elements.append(
+            {
+                "element_type": "Dipole",
+                "description": "Dipole #0",
+                "M_4x4": M_d0,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_dipole,
+            }
+        )
 
         # 3) Drift
         Md = drift_4x4(self.L_drift)
-        elements.append({
-            'element_type': 'Drift',
-            'description': 'Drift After Dipole #0',
-            'M_4x4': Md,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_drift
-        })
+        elements.append(
+            {
+                "element_type": "Drift",
+                "description": "Drift After Dipole #0",
+                "M_4x4": Md,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_drift,
+            }
+        )
 
         # 4) Quad (Defocusing)
         M_qd = quad_transfer_matrix_4x4(self.k_d, self.L_quad, self.use_thin_lens)
-        elements.append({
-            'element_type': 'Quad',
-            'description': 'Defocusing Quad',
-            'M_4x4': M_qd,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_quad
-        })
+        elements.append(
+            {
+                "element_type": "Quad",
+                "description": "Defocusing Quad",
+                "M_4x4": M_qd,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_quad,
+            }
+        )
 
         # 5) Drift
         Md = drift_4x4(self.L_drift)
-        elements.append({
-            'element_type': 'Drift',
-            'description': 'Drift Before Dipole #1',
-            'M_4x4': Md,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_drift
-        })
+        elements.append(
+            {
+                "element_type": "Drift",
+                "description": "Drift Before Dipole #1",
+                "M_4x4": Md,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_drift,
+            }
+        )
 
         # 6) Dipole #1
         M_d1 = pure_sector_dipole_4x4(self.L_dipole, self.rho)
 
-        elements.append({
-            'element_type': 'Dipole',
-            'description': 'Dipole #1',
-            'M_4x4': M_d1,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_dipole
-        })
+        elements.append(
+            {
+                "element_type": "Dipole",
+                "description": "Dipole #1",
+                "M_4x4": M_d1,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_dipole,
+            }
+        )
 
         # 7) Drift
         Md = drift_4x4(self.L_drift)
-        elements.append({
-            'element_type': 'Drift',
-            'description': 'Drift After Dipole #1',
-            'M_4x4': Md,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_drift
-        })
+        elements.append(
+            {
+                "element_type": "Drift",
+                "description": "Drift After Dipole #1",
+                "M_4x4": Md,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_drift,
+            }
+        )
 
         # 8) Quad (Focusing)
         M_qf = quad_transfer_matrix_4x4(self.k_f, self.L_quad, self.use_thin_lens)
-        elements.append({
-            'element_type': 'Quad',
-            'description': 'Focusing Quad',
-            'M_4x4': M_qf,
-            'D_4x1': np.zeros(4, dtype=np.float64),
-            's_elem': self.L_quad
-        })
+        elements.append(
+            {
+                "element_type": "Quad",
+                "description": "Focusing Quad",
+                "M_4x4": M_qf,
+                "D_4x1": np.zeros(4, dtype=np.float64),
+                "s_elem": self.L_quad,
+            }
+        )
 
         return elements
 
 
-class LatticeReference:
-    def __init__(self, simulator):
-        """
-        Initialize LatticeReference from SynchrotronSimulator.
-
-        Parameters:
-            simulator (SynchrotronSimulator): The simulator instance to extract parameters from.
-        """
-        self.design_radius = simulator.design_radius
-        self.circumference = simulator.circumference
-        self.n_FODO = simulator.n_FODO
-        self.cell_length = simulator.cell_length
-        self.total_FODO_length = simulator.total_FODO_length
-        self.n_Dipoles = simulator.n_Dipoles
-        self.f = simulator.f
-        self.k_nominal = simulator.k_nominal
-        self.L_quad = simulator.L_quad
-        self.L_straight = simulator.L_straight
-        self.L_drift = simulator.L_drift
-        self.L_dipole = simulator.L_dipole
-        self.theta_dipole = simulator.theta_dipole
-        self.n_turns = simulator.n_turns
-        self.num_particles = simulator.num_particles
-        self.B = simulator.B
-        self.B_rho = simulator.B_rho
-        self.Qx = simulator.Qx
-        self.Qy = simulator.Qy
-        self.turns_full_oscillation_x = simulator.turns_full_oscillation_x
-        self.turns_full_oscillation_y = simulator.turns_full_oscillation_y
-        # Quadrupole Errors
-        self.quad_errors = simulator.quad_errors
-
-        # Lattice elements
-        self.lattice_elements_positions = simulator.lattice_elements_positions
-        self.lattice_elements_description = simulator.lattice_elements_description
-        
-        self.quad_errors = simulator.quad_errors
-        self.quadrupole_tilt_errors = simulator.quadrupole_tilt_errors
-        self.dipole_tilt_errors = simulator.dipole_tilt_errors
-        
-
-        # BPM positions
-        self.bpm_positions = simulator.bpm_positions
-
-    def describe(self):
-        """Print the lattice reference information."""
-        print()
-        print("Lattice Reference:")
-        print(f"Design Radius: {self.design_radius} meters")
-        print(f"Lattice Circumference: {self.circumference} meters")
-        print(f"Number of FODO Cells: {self.n_FODO}")
-        print(f"Total Length per FODO Cell: {self.cell_length}")
-        print(f"Total Length of All FODO Cells: {self.total_FODO_length:.5f} meters")
-        print(f"Number of Dipoles: {self.n_Dipoles}")
-        print(f"Quadrupole Focal Length (f): {self.f} meters")
-        print(f"Focusing Index {self.k_nominal}")
-        print(f"Quadrupole Length (L_quad): {self.L_quad} meters")
-        print(f"Straight Section Length (L_straight): {self.L_straight} meters")
-        print(f"Drift Section Length: {self.L_drift} meters")
-        print(f"Dipole Length per Dipole: {self.L_dipole:.5f} meters")
-        print(f"Dipole Bending Angle per Dipole: {np.degrees(self.theta_dipole):.5f} degrees")
-        print(f"Number of Turns: {self.n_turns}")
-        print(f"Number of Particles: {self.num_particles}")
-        print(f"Magnetic Field (B): {self.B:.5f} Tesla")
-        print(f"Magnetic Field Rigidity (B_rho): {self.B_rho:.5f} Tesla/meters")
-        print(f"Horizontal Tune (Qx): {self.Qx:.6f}")
-        print(f"Vertical Tune (Qy): {self.Qy:.6f}")
-        print(f"Number of turns for Full Oscillation (X): {self.turns_full_oscillation_x}")
-        print(f"Number of turns for Full Oscillation (Y): {self.turns_full_oscillation_y}")
-
-        print()
-        print("Error Configuration:")
-        if self.quad_errors:
-            for idx, error in enumerate(self.quad_errors):
-                print(f"  Quadrupole Error {idx+1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Plane = {error.plane.capitalize()}, Quad, delta = {error.delta} m")
-        else:
-            print("  Quadrupole Error: None")
-            
-        if self.quadrupole_tilt_errors:
-            for idx, error in enumerate(self.quad_tilt_errors):
-                print(f"  Quadrupole Tilt Error {idx+1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Tilt Angle = {error.tilt_angle} rad")    
-        else:
-            print("  Quadrupole Tilt Error: None")
-        
-        if self.dipole_tilt_errors:
-            for idx, error in enumerate(self.dipole_tilt_errors):
-                print(f"  Dipole Tilt Error {idx+1}: FODO Cell {error.FODO_index}, Dipole {error.dipole_index}, Tilt Angle = {error.tilt_angle} rad")
-        else:
-            print("  Dipole Tilt Error: None")
-
-
 class SynchrotronSimulator:
-    MAX_ITER_PER_INFER = 1  # Number of turns to process per GPU inference batch (configurable)
-    
-    def __init__(self, design_radius, L_quad, L_straight, p, q, n_turns, total_dipole_bending_angle,
-                 num_particles=1, n_FODO=None, L_dipole=None, n_Dipoles=None,
-                 G=None, f=None, use_thin_lens=False, mag_field_range=(0.5, 2.0), dipole_length_range=(0.5, 5.0),
-                 horizontal_tune_range=(0.2, 0.8), vertical_tune_range=(0.2, 0.8), 
-                 use_gpu_numba=False, use_gpu_torch=False, max_iter_per_infer=1,
-                 use_memmap=False, memmap_dir=None,
-                 verbose=True, figs_save_dir='figs', correct_injection_offset=False,
-                 quad_k_stochastic_jitter=None, quad_k_systemic_drift=None):
+    MAX_ITER_PER_INFER = (
+        1  # Number of turns to process per GPU inference batch (configurable)
+    )
+
+    def __init__(
+        self,
+        design_radius,
+        L_quad,
+        L_straight,
+        p,
+        q,
+        n_turns,
+        total_dipole_bending_angle,
+        num_particles=1,
+        n_FODO=None,
+        L_dipole=None,
+        n_Dipoles=None,
+        G=None,
+        f=None,
+        use_thin_lens=False,
+        mag_field_range=(0.5, 2.0),
+        dipole_length_range=(0.5, 5.0),
+        horizontal_tune_range=(0.2, 0.8),
+        vertical_tune_range=(0.2, 0.8),
+        use_gpu_numba=False,
+        use_gpu_torch=False,
+        max_iter_per_infer=1,
+        use_memmap=False,
+        memmap_dir=None,
+        verbose=True,
+        figs_save_dir="figs",
+        correct_injection_offset=False,
+        k_errors=None,
+    ):
         """
         Initialize the Synchrotron Simulator.
 
@@ -517,7 +480,7 @@ class SynchrotronSimulator:
             vertical_tune_range (tuple): (min_Qy, max_Qy)
             use_gpu_numba (bool): If True, perform simulation on GPU using Numba CUDA. Defaults to False.
             use_gpu_torch (bool): If True, perform simulation on GPU using PyTorch. Defaults to False.
-            max_iter_per_infer (int): Maximum number of turns to process per GPU inference batch. 
+            max_iter_per_infer (int): Maximum number of turns to process per GPU inference batch.
                 Controls memory usage - smaller values use less GPU memory but require more CPU-GPU transfers.
                 Defaults to 1 (process one turn at a time). Increase for better performance with large n_turns.
             use_memmap (bool): If True, use memory-mapped files for BPM data storage. This allows
@@ -526,27 +489,26 @@ class SynchrotronSimulator:
             memmap_dir (str): Directory to store memory-mapped files. If None, uses system temp directory.
                 Useful for specifying a fast SSD location. Defaults to None.
             verbose (bool): If True, print progress and information about the lattice and the simulation
-            quad_k_stochastic_jitter (QuadrupoleKStochasticJitterError or None): Stochastic jitter error for quadrupole k.
-                If provided, applies random ±jitter_fraction variation to ALL quadrupoles for each simulation run.
-                Default: None (no stochastic jitter).
-            quad_k_systemic_drift (QuadrupoleKSystemicDriftError or None): Systemic drift error for quadrupole k.
-                If provided, applies random ±drift_fraction variation to ALL quadrupoles (cumulative with jitter).
-                Default: None (no systemic drift).
+            k_errors (dict or None): Configuration for k errors (focusing strength errors).
+                If provided, should have the structure:
+                {
+                    'enabled': bool,
+                    'k_systemic_drift_fraction_range': (min, max),  # Global, fraction of k_nominal
+                    'k_stochastic_jitter_fraction_range': (min, max),  # Global, fraction of k_nominal
+                    'k_error_cells': [
+                        {'FODO_index': int, 'quad_type': 'focusing'|'defocusing'},
+                        ...
+                    ]
+                }
+                The k error applied to each quad is: k_actual = k_nominal + k_delta + k_noise
+                where k_delta is sampled once per simulation from k_systemic_drift_fraction_range,
+                and k_noise is sampled independently for each quad from k_stochastic_jitter_fraction_range.
+                Default: None (no k errors).
         """
-        # Store k variation error configurations
-        self.quad_k_stochastic_jitter = quad_k_stochastic_jitter
-        self.quad_k_systemic_drift = quad_k_systemic_drift
-        
-        # Compute k variation factors if errors are provided
-        self._k_variation_factor = 0.0  # Default: no variation
-        if self.quad_k_stochastic_jitter is not None:
-            self._k_variation_factor += self.quad_k_stochastic_jitter.get_k_factor()
-        if self.quad_k_systemic_drift is not None:
-            self._k_variation_factor += self.quad_k_systemic_drift.get_k_factor()
-        
-        if self._k_variation_factor != 0.0:
-            if self.verbose:
-                print(f"[K Variation] Applied k factor: {self._k_variation_factor:.4f} ({self._k_variation_factor*100:.2f}%)")
+        self.k_errors = k_errors
+        self._k_delta = 0.0
+        self._k_noise_map = {}
+        self._k_actual_map = {}
         # Design parameters
         self.design_radius = design_radius
         self.L_quad = L_quad
@@ -563,7 +525,7 @@ class SynchrotronSimulator:
 
         # Memory-mapped file configuration
         self.use_memmap = use_memmap
-        self.memmap_dir = memmap_dir if memmap_dir else '/tmp'
+        self.memmap_dir = memmap_dir if memmap_dir else "/tmp"
         self._memmap_files = {}  # Track memmap file paths for cleanup
 
         # Particle parameters
@@ -596,7 +558,9 @@ class SynchrotronSimulator:
         if self.rho == 0:
             raise ValueError("Bending radius rho cannot be zero.")
 
-        assert np.isclose(self.B * self.rho, self.p_over_q, atol=1e-12), "Magnetic rigidity mismatch!"
+        assert np.isclose(self.B * self.rho, self.p_over_q, atol=1e-12), (
+            "Magnetic rigidity mismatch!"
+        )
 
         # Simulation parameters
         self.n_turns = n_turns
@@ -610,23 +574,23 @@ class SynchrotronSimulator:
         self.n_Dipoles = n_Dipoles
         self.total_FODO_length = None
         self.L_drift = None
-        
+
         # self.Mx_lattice_cell = []
         # self.My_lattice_cell = []
         # self.Dx_lattice_cell = []
         # self.Dy_lattice_cell = []
         # self.theta_lattice_cell = []
-        
+
         # storing the final ring as lists of dicts with 'M_4x4', 's_elem', etc.
-        self.M_lattice_4x4 = [] # list of 4x4 for each element
-        self.D_lattice_4x1   = [] # list of 4×1 for each element
+        self.M_lattice_4x4 = []  # list of 4x4 for each element
+        self.D_lattice_4x1 = []  # list of 4×1 for each element
         self.lattice_positions = []
         self.bpm_positions = []
         self.len_per_cell_list = []
-        
+
         # self.len_per_rev = None
         # self.len_per_cell = None
-        
+
         # Initialize len_per_cell_list as an empty list
         self.len_per_cell_list = []
 
@@ -634,9 +598,11 @@ class SynchrotronSimulator:
         self.include_quad_error = False
         self.quad_errors = []  # List of QuadrupoleMisAlignError instances
 
-        self.quadrupole_tilt_errors = [] # List of QuadrupoleTiltError instances
-        self.dipole_tilt_errors = [] # List of DipoleTiltError instances
+        self.quadrupole_tilt_errors = []  # List of QuadrupoleTiltError instances
+        self.dipole_tilt_errors = []  # List of DipoleTiltError instances
 
+        self.verbose = verbose
+        self._init_k_errors()
 
         # Tune and phase advances
         self.mu_x = None
@@ -655,16 +621,11 @@ class SynchrotronSimulator:
         self.lattice_elements_description = []
 
         # BPM Readings
-        self.bpm_readings = {
-            'x': None,
-            'y': None,
-            'xp': None,
-            'yp': None
-        }
+        self.bpm_readings = {"x": None, "y": None, "xp": None, "yp": None}
 
         # Beam Size Parameters
         self.epsilon_horizontal = None  # Beam width in X (meters)
-        self.epsilon_vertical = None    # Beam height in Y (meters)
+        self.epsilon_vertical = None  # Beam height in Y (meters)
 
         # New Constraints
         self.min_B, self.max_B = mag_field_range
@@ -675,39 +636,38 @@ class SynchrotronSimulator:
         # GPU flag - determine which backend to use
         # use_gpu_numba and use_gpu_torch are the new parameters
         # If either is True, we'll use GPU simulation
-        self.use_gpu = use_gpu_numba or use_gpu_torch  # Legacy flag for backward compatibility
-        
+        self.use_gpu = (
+            use_gpu_numba or use_gpu_torch
+        )  # Legacy flag for backward compatibility
+
         # Print backend info message
         if use_gpu_numba and use_gpu_torch:
-            backend = 'GPU (Numba & PyTorch)'
-            print("Warning: Both use_gpu_numba and use_gpu_torch are True. Using PyTorch GPU.")
+            backend = "GPU (Numba & PyTorch)"
+            print(
+                "Warning: Both use_gpu_numba and use_gpu_torch are True. Using PyTorch GPU."
+            )
             self.use_gpu_numba = False  # Prefer PyTorch
         elif use_gpu_numba:
-            backend = 'GPU (Numba - deprecated)'
-            print("Warning: Numba GPU is deprecated. Consider using use_gpu_torch instead.")
+            backend = "GPU (Numba - deprecated)"
+            print(
+                "Warning: Numba GPU is deprecated. Consider using use_gpu_torch instead."
+            )
         elif use_gpu_torch:
-            backend = 'GPU (PyTorch)'
+            backend = "GPU (PyTorch)"
         else:
-            backend = 'CPU'
+            backend = "CPU"
         self.backend_uasge_msg = f"[Info] Using `{backend}` backend for simulation."
-        
-        # Usefull for debugging
-        self.verbose = verbose
-        
+
         self.figs_save_dir = figs_save_dir
         if not os.path.exists(f"{self.figs_save_dir}"):
             os.makedirs(f"{self.figs_save_dir}")
-            
+
         # Initialize the simulation
         self.bpm_positions = []  # Initialize BPM positions list
         self.design_synchrotron()
         self.build_lattice()
         self.verify_transfer_matrices()
         self.compute_tunes()
-
-    def get_lattice_reference(self):
-        """Return a LatticeReference instance."""
-        return LatticeReference(self)
 
     def describe(self):
         """Print the synchrotron structure and configuration."""
@@ -726,35 +686,68 @@ class SynchrotronSimulator:
         print(f"Straight Section Length (L_straight): {self.L_straight} meters")
         print(f"Drift Section Length: {self.L_drift} meters")
         print(f"Dipole Length per Dipole: {self.L_dipole:.5f} meters")
-        print(f"Dipole Bending Angle per Dipole: {np.degrees(self.theta_dipole):.5f} degrees")
+        print(
+            f"Dipole Bending Angle per Dipole: {np.degrees(self.theta_dipole):.5f} degrees"
+        )
         print(f"Number of Turns: {self.n_turns}")
         print(f"Number of Particles: {self.num_particles}")
         print(f"Magnetic Field (B): {self.B:.5f} Tesla")
         print(f"Magnetic Field Rigidity (B_rho): {self.B_rho:.5f} Tesla/meters")
         print(f"Horizontal Tune (Qx): {self.Qx:.6f}")
         print(f"Vertical Tune (Qy): {self.Qy:.6f}")
-        print(f"Number of turns for Full Oscillation (X): {self.turns_full_oscillation_x}")
-        print(f"Number of turns for Full Oscillation (Y): {self.turns_full_oscillation_y}")
+        print(
+            f"Number of turns for Full Oscillation (X): {self.turns_full_oscillation_x}"
+        )
+        print(
+            f"Number of turns for Full Oscillation (Y): {self.turns_full_oscillation_y}"
+        )
 
         print("Error Configuration:")
         if self.quad_errors:
             for idx, error in enumerate(self.quad_errors):
-                print(f"  Quadrupole Error {idx+1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Plane = {error.plane.capitalize()}, Quad, delta = {error.delta} m")
+                print(
+                    f"  Quadrupole Error {idx + 1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Plane = {error.plane.capitalize()}, Quad, delta = {error.delta} m"
+                )
         else:
             print("  Quadrupole Error: None")
-            
+
         if self.quadrupole_tilt_errors:
             for idx, error in enumerate(self.quadrupole_tilt_errors):
-                print(f"  Quadrupole Tilt Error {idx+1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Tilt Angle = {error.tilt_angle} rad")    
+                print(
+                    f"  Quadrupole Tilt Error {idx + 1}: FODO Cell {error.FODO_index}, {error.quad_type.capitalize()}, Tilt Angle = {error.tilt_angle} rad"
+                )
         else:
             print("  Quadrupole Tilt Error: None")
-        
+
         if self.dipole_tilt_errors:
             for idx, error in enumerate(self.dipole_tilt_errors):
-                print(f"  Dipole Tilt Error {idx+1}: FODO Cell {error.FODO_index}, Dipole {error.dipole_index}, Tilt Angle = {error.tilt_angle} rad")
+                print(
+                    f"  Dipole Tilt Error {idx + 1}: FODO Cell {error.FODO_index}, Dipole {error.dipole_index}, Tilt Angle = {error.tilt_angle} rad"
+                )
         else:
             print("  Dipole Tilt Error: None")
 
+        if self.k_errors and self.k_errors.get("enabled", False):
+            print("  K Errors: Enabled")
+            drift_range = self.k_errors.get(
+                "k_systemic_drift_fraction_range", (0.0, 0.0)
+            )
+            jitter_range = self.k_errors.get(
+                "k_stochastic_jitter_fraction_range", (0.0, 0.0)
+            )
+            print(f"    Systemic Drift Fraction Range: {drift_range}")
+            print(f"    Stochastic Jitter Fraction Range: {jitter_range}")
+            print(
+                f"    k_delta (systemic drift): {self._k_delta:.6f} ({self._k_delta / self.k_nominal * 100:.2f}% of k_nominal)"
+            )
+            if self._k_noise_map:
+                print(f"    k_noise (per-quad):")
+                for key, k_noise in self._k_noise_map.items():
+                    print(
+                        f"      Quad {key}: k_noise={k_noise:.6f} ({k_noise / self.k_nominal * 100:.2f}% of k_nominal)"
+                    )
+        else:
+            print("  K Errors: None")
 
         print("\nSynchrotron Structure:")
         print("Elements in one FODO cell:")
@@ -765,7 +758,7 @@ class SynchrotronSimulator:
         print("\nElements positions in each FODO cell (positions in meters):")
         elements_per_cell = {}
         for elem in self.lattice_elements_positions:
-            cell_idx = elem['cell_index']
+            cell_idx = elem["cell_index"]
             if cell_idx not in elements_per_cell:
                 elements_per_cell[cell_idx] = []
             elements_per_cell[cell_idx].append(elem)
@@ -773,17 +766,18 @@ class SynchrotronSimulator:
         for cell_idx in sorted(elements_per_cell.keys()):
             print(f"\nFODO Cell {cell_idx}:")
             for elem_idx, elem in enumerate(elements_per_cell[cell_idx]):
-                elem_type = elem['element_type']
-                description = elem['description']
-                start_s = elem['start_s']
-                end_s = elem['end_s']
+                elem_type = elem["element_type"]
+                description = elem["description"]
+                start_s = elem["start_s"]
+                end_s = elem["end_s"]
                 length = end_s - start_s
-                print(f"  Element {elem_idx}: {description}, Type: {elem_type}, Start s: {start_s:.5f} m, End s: {end_s:.5f} m, Length: {length:.5f} m")
+                print(
+                    f"  Element {elem_idx}: {description}, Type: {elem_type}, Start s: {start_s:.5f} m, End s: {end_s:.5f} m, Length: {length:.5f} m"
+                )
 
     def drift(self, L):
         """Transfer matrix for a drift space of length L."""
-        return np.array([[1, L],
-                         [0, 1]])
+        return np.array([[1, L], [0, 1]])
 
     def design_synchrotron(self):
         """Designs the synchrotron given the design parameters and constraints."""
@@ -807,24 +801,34 @@ class SynchrotronSimulator:
         total_straight_length = circumference - total_dipole_length
 
         if total_straight_length <= 0:
-            raise ValueError("Total straight length is negative or zero. Adjust the total dipole bending angle or design radius.")
+            raise ValueError(
+                "Total straight length is negative or zero. Adjust the total dipole bending angle or design radius."
+            )
 
         # Number of straight sections (assumed equal to n_FODO)
         num_straight_sections = self.n_FODO
         length_per_straight_section = total_straight_length / num_straight_sections
 
         # Distribute length among drifts and quadrupoles
-        total_quad_length_per_cell = 2 * self.L_quad  # One focusing and one defocusing quad per cell
-        total_drift_length_per_cell = length_per_straight_section - total_quad_length_per_cell
+        total_quad_length_per_cell = (
+            2 * self.L_quad
+        )  # One focusing and one defocusing quad per cell
+        total_drift_length_per_cell = (
+            length_per_straight_section - total_quad_length_per_cell
+        )
 
         if total_drift_length_per_cell <= 0:
-            raise ValueError("Total drift length per cell is negative or zero. Adjust quadrupole length or total dipole bending angle.")
+            raise ValueError(
+                "Total drift length per cell is negative or zero. Adjust quadrupole length or total dipole bending angle."
+            )
 
         # Number of drifts per cell (assumed 4)
         L_drift = total_drift_length_per_cell / 4
 
         if L_drift <= 0:
-            raise ValueError(f"Calculated drift length (L_drift = {L_drift:.5f} m) is negative or zero. Check your parameters.")
+            raise ValueError(
+                f"Calculated drift length (L_drift = {L_drift:.5f} m) is negative or zero. Check your parameters."
+            )
 
         # Update drift lengths
         self.L_drift = L_drift
@@ -838,7 +842,9 @@ class SynchrotronSimulator:
         # Check that the total length matches the circumference
         length_difference = abs(self.circumference - self.total_FODO_length)
         if length_difference > 1e-6:
-            raise ValueError(f"Total length of FODO cells ({self.total_FODO_length:.6f} m) does not match circumference ({self.circumference:.6f} m).")
+            raise ValueError(
+                f"Total length of FODO cells ({self.total_FODO_length:.6f} m) does not match circumference ({self.circumference:.6f} m)."
+            )
 
         # Calculate magnetic field B using B = p / (q * rho)
         self.B = self.p / (self.q * self.design_radius)  # Tesla
@@ -846,14 +852,17 @@ class SynchrotronSimulator:
 
         # Check magnetic field constraints
         if not (self.min_B <= self.B <= self.max_B):
-            raise ValueError(f"Magnetic field (B = {self.B:.5f} T) out of bounds [{self.min_B} T, {self.max_B} T]. "
-                            f"Adjust design radius or number of dipoles.")
+            raise ValueError(
+                f"Magnetic field (B = {self.B:.5f} T) out of bounds [{self.min_B} T, {self.max_B} T]. "
+                f"Adjust design radius or number of dipoles."
+            )
 
         # Check dipole length constraints
         if not (self.min_Ld <= self.L_dipole <= self.max_Ld):
-            raise ValueError(f"Dipole length (L_dipole = {self.L_dipole:.5f} m) out of bounds [{self.min_Ld} m, {self.max_Ld} m]. "
-                            f"Adjust design radius or number of dipoles.")
-
+            raise ValueError(
+                f"Dipole length (L_dipole = {self.L_dipole:.5f} m) out of bounds [{self.min_Ld} m, {self.max_Ld} m]. "
+                f"Adjust design radius or number of dipoles."
+            )
 
     def set_quad_error(self, FODO_index, quad_type, delta, plane):
         """
@@ -878,15 +887,81 @@ class SynchrotronSimulator:
         Set a tilt error in a dipole, identified by 'element_index'
         (or however you keep track of dipole indices).
         """
-        self.dipole_tilt_errors.append(DipoleTiltError(FODO_index, dipole_index, tilt_angle))
+        self.dipole_tilt_errors.append(
+            DipoleTiltError(FODO_index, dipole_index, tilt_angle)
+        )
 
     def set_quadrupole_tilt_error(self, FODO_index, quad_type, tilt_angle):
         """
         Set a tilt error in a quadrupole, identified by 'FODO_index'
         (or global element index).
         """
-        self.quadrupole_tilt_errors.append(QuadrupoleTiltError(FODO_index, quad_type, tilt_angle))
+        self.quadrupole_tilt_errors.append(
+            QuadrupoleTiltError(FODO_index, quad_type, tilt_angle)
+        )
 
+    def _init_k_errors(self):
+        """
+        Initialize k errors from k_errors configuration using the existing
+        QuadrupoleKSystemicDriftError and QuadrupoleKStochasticJitterError classes.
+
+        k_delta is sampled ONCE per simulation using QuadrupoleKSystemicDriftError.
+        k_noise is sampled INDEPENDENTLY per quad using QuadrupoleKStochasticJitterError.
+
+        Final k value: k_actual = k_nominal + k_delta + k_noise
+        """
+        self._k_delta = 0.0
+        self._k_noise_map = {}
+        self._k_actual_map = {}
+
+        if self.k_errors is None or not self.k_errors.get("enabled", False):
+            return
+
+        drift_range = self.k_errors.get("k_systemic_drift_fraction_range", (0.0, 0.0))
+        jitter_range = self.k_errors.get(
+            "k_stochastic_jitter_fraction_range", (0.0, 0.0)
+        )
+        k_error_cells = self.k_errors.get("k_error_cells", [])
+
+        if not k_error_cells:
+            return
+
+        drift_fraction = np.mean(drift_range)
+        jitter_fraction = np.mean(jitter_range)
+
+        systemic_drift_error = QuadrupoleKSystemicDriftError(
+            drift_fraction=drift_fraction
+        )
+        self._k_delta = systemic_drift_error.get_k_factor() * self.k_nominal
+
+        if self.verbose:
+            print(f"[K Errors] Initialized k_errors:")
+            print(
+                f"  k_delta (systemic drift): {self._k_delta:.6f} ({self._k_delta / self.k_nominal * 100:.2f}% of k_nominal)"
+            )
+
+        for cell_config in k_error_cells:
+            fodo_index = cell_config["FODO_index"]
+            quad_type = cell_config["quad_type"]
+            key = (fodo_index, quad_type.lower())
+
+            jitter_error = QuadrupoleKStochasticJitterError(
+                jitter_fraction=jitter_fraction
+            )
+            k_noise = jitter_error.get_k_factor() * self.k_nominal
+            self._k_noise_map[key] = k_noise
+
+            k_nominal = (
+                self.k_f_nominal
+                if quad_type.lower() == "focusing"
+                else self.k_d_nominal
+            )
+            self._k_actual_map[key] = k_nominal + self._k_delta + k_noise
+
+            if self.verbose:
+                print(
+                    f"  Quad ({fodo_index}, {quad_type}): k_nominal={k_nominal:.6f}, k_actual={self._k_actual_map[key]:.6f} (noise={k_noise:.6f})"
+                )
 
     def build_lattice(self):
         """
@@ -899,6 +974,7 @@ class SynchrotronSimulator:
         - For each dipole or quad, inserts:
             1) A tilt error element if specified in self.dipole_tilt_errors or self.quadrupole_tilt_errors.
             2) The old 'Quad' misalignment error (displacement-based) as an extra 4x4 "kick."
+            3) k errors if specified in self.k_errors (per-quad k variations).
         - Records element positions in self.lattice_elements_positions.
         - Updates self.len_per_cell_list.
         """
@@ -922,34 +998,36 @@ class SynchrotronSimulator:
             k_f_nominal = float(1 / self.f)
             k_d_nominal = float(-1 / self.f)
 
-        # Apply k variation factor (stochastic jitter + systemic drift) to ALL quadrupoles
-        # k_actual = k_nominal * (1 + k_variation_factor)
-        k_f_with_variation = k_f_nominal * (1.0 + self._k_variation_factor)
-        k_d_with_variation = k_d_nominal * (1.0 + self._k_variation_factor)
-        
-        if self._k_variation_factor != 0.0 and self.verbose:
-            print(f"[K Variation] Applied to quadrupoles: k_f = {k_f_with_variation:.6f} (nominal: {k_f_nominal:.6f}), "
-                  f"k_d = {k_d_with_variation:.6f} (nominal: {k_d_nominal:.6f})")
+        # Create FODO cell with nominal k values; per-quad k errors will be applied during replication
+        k_f_for_cell = k_f_nominal
+        k_d_for_cell = k_d_nominal
+
+        if self._k_delta != 0.0 and self.verbose:
+            print(
+                f"[K Errors] Using nominal k values; per-quad k actuals will be applied during replication"
+            )
 
         # Adjusted drift lengths
         L_drift = self.L_drift
-        # create the FODO cell object
+        # create the FODO cell object with nominal k values
         fodo_cell = FODOCell4D(
             L_quad=self.L_quad,
             L_drift=L_drift,
             L_dipole=self.L_dipole,
             theta_dipole=self.theta_dipole,
-            k_f=k_f_with_variation,
-            k_d=k_d_with_variation,
+            k_f=k_f_for_cell,
+            k_d=k_d_for_cell,
             rho=self.rho,
             k_nominal=self.k_nominal,
-            use_thin_lens=self.use_thin_lens
+            use_thin_lens=self.use_thin_lens,
         )
-                
+
         cell_template = fodo_cell.get_elements_4x4()  # returns 8 elements if n_FODO=8
 
         # Save the description of elements in one FODO cell
-        self.lattice_elements_description = [elem['description'] for elem in cell_template]
+        self.lattice_elements_description = [
+            elem["description"] for elem in cell_template
+        ]
 
         global_elem_index = 0  # If you want to keep track of a global index
 
@@ -959,135 +1037,134 @@ class SynchrotronSimulator:
 
             # Loop over the template elements in one cell
             for elem in cell_template:
-                elem_type = elem['element_type']
-                description = elem['description']
-                M_4x4 = elem['M_4x4']
-                D_4x1 = elem['D_4x1']
-                s_elem = elem['s_elem']
-
-                        # OLD TILT WAY
-                        # # 3a) Insert the main element's 4x4
-                        # self.M_lattice_4x4.append(M_4x4)
-                        # self.D_lattice_4x1.append(D_4x1)
+                elem_type = elem["element_type"]
+                description = elem["description"]
+                M_4x4 = elem["M_4x4"]
+                D_4x1 = elem["D_4x1"]
+                s_elem = elem["s_elem"]
 
                 # Record its start/end positions
                 start_s = cumulative_s
-                end_s   = cumulative_s + s_elem
+                end_s = cumulative_s + s_elem
                 cumulative_s = end_s
 
-                self.lattice_elements_positions.append({
-                    'cell_index': cell_index,
-                    'element_type': elem_type,
-                    'description': description,
-                    'start_s': start_s,
-                    'end_s': end_s
-                })
+                self.lattice_elements_positions.append(
+                    {
+                        "cell_index": cell_index,
+                        "element_type": elem_type,
+                        "description": description,
+                        "start_s": start_s,
+                        "end_s": end_s,
+                    }
+                )
 
                 global_elem_index += 1
                 cell_elements_count += 1
 
                 # 3b) If it's a dipole, check for a DIPOLE tilt error
-                if elem_type == 'Dipole':
+                if elem_type == "Dipole":
                     # We can parse which dipole # from the description => e.g. "Dipole #0" => dipole_number=0
-                    dipole_number = 0 if '#0' in description else 1
+                    dipole_number = 0 if "#0" in description else 1
 
                     # see if there's a matching tilt
                     for tilt_err in self.dipole_tilt_errors:
-                        if (tilt_err.FODO_index == cell_index
-                            and tilt_err.dipole_index == dipole_number):
-
-                                    # OLD TILT WAY
-                                    # Insert a zero-length tilt element
-                                    # tilt_elem = make_tilt_element_4x4(
-                                    #     tilt_err.tilt_angle,
-                                    #     description=f"Dipole Tilt after {description} in cell {cell_index}"
-                                    # )
-                                    # self.M_lattice_4x4.append(tilt_elem['M_4x4'])
-                                    # D_kick = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-                                    # self.D_lattice_4x1.append(D_kick)
-                                    
-                                    # # positions for the tilt element => s_elem=0 => same start/end
-                                    # self.lattice_elements_positions.append({
-                                    #     'cell_index': cell_index,
-                                    #     'element_type': 'DipoleTiltError',
-                                    #     'description': tilt_elem['description'],
-                                    #     'start_s': cumulative_s,
-                                    #     'end_s': cumulative_s
-                                    # })
-                                    # cell_elements_count += 1
-                            
-                            # NEW TILT, correct way
+                        if (
+                            tilt_err.FODO_index == cell_index
+                            and tilt_err.dipole_index == dipole_number
+                        ):
                             tilt_angle = tilt_err.tilt_angle
                             M_4x4 = tilt_4x4(tilt_angle) @ M_4x4
-                            updated_description  = elem['description'] + f" + DipoleTilt({tilt_angle:.4g} rad)"
-                            self.lattice_elements_positions[-1]['description'] = updated_description
+                            updated_description = (
+                                elem["description"]
+                                + f" + DipoleTilt({tilt_angle:.4g} rad)"
+                            )
+                            self.lattice_elements_positions[-1]["description"] = (
+                                updated_description
+                            )
 
                             if self.verbose:
-                                print(f"Inserted DipoleTiltError @ cell={cell_index}, dipole={dipole_number}, angle={tilt_err.tilt_angle}")
+                                print(
+                                    f"Inserted DipoleTiltError @ cell={cell_index}, dipole={dipole_number}, angle={tilt_err.tilt_angle}"
+                                )
 
                 # 3c) If it's a quad, check for QUAD tilt error & old misalignment
-                elif elem_type == 'Quad':
+                elif elem_type == "Quad":
                     # figure out focusing vs defocusing
-                    isFocusing = ('Focusing' in description)
-                    quad_type_str = 'focusing' if isFocusing else 'defocusing'
+                    isFocusing = "Focusing" in description
+                    quad_type_str = "focusing" if isFocusing else "defocusing"
 
                     # -- Quadrupole Tilt Error --
                     for tilt_err in self.quadrupole_tilt_errors:
-                        if (tilt_err.FODO_index == cell_index
-                            and tilt_err.quad_type == quad_type_str):
-
-                                    # OLD TILT WAY
-                                    # Insert a zero-length tilt element
-                                    # tilt_elem = make_tilt_element_4x4(
-                                    #     tilt_err.tilt_angle,
-                                    #     description=f"Quad Tilt after {description} in cell {cell_index}"
-                                    # )
-                                    # self.M_lattice_4x4.append(tilt_elem['M_4x4'])
-                                    # D_kick = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-                                    # self.D_lattice_4x1.append(D_kick)
-
-                                    # self.lattice_elements_positions.append({
-                                    #     'cell_index': cell_index,
-                                    #     'element_type': 'QuadTiltError',
-                                    #     'description': tilt_elem['description'],
-                                    #     'start_s': cumulative_s,
-                                    #     'end_s': cumulative_s
-                                    # })
-                                    # cell_elements_count += 1
-
-                            
-                            # NEW TILT, correct way
-                            # apply sandwiched tilt
+                        if (
+                            tilt_err.FODO_index == cell_index
+                            and tilt_err.quad_type == quad_type_str
+                        ):
                             tilt_angle = tilt_err.tilt_angle
                             Rp = tilt_4x4(+tilt_angle)
                             Rm = tilt_4x4(-tilt_angle)
-                            # Sandwich the original quad matrix
                             M_4x4 = Rm @ M_4x4 @ Rp
-                            updated_description  = elem['description'] + f" + QuadTilt({tilt_angle:.4g} rad)"
-                            self.lattice_elements_positions[-1]['description'] = updated_description
-                            
+                            updated_description = (
+                                elem["description"]
+                                + f" + QuadTilt({tilt_angle:.4g} rad)"
+                            )
+                            self.lattice_elements_positions[-1]["description"] = (
+                                updated_description
+                            )
+
                             if self.verbose:
-                                print(f"\tInserted QuadTiltError @ cell={cell_index}, type={quad_type_str}, angle={tilt_err.tilt_angle}")
-                                
+                                print(
+                                    f"\tInserted QuadTiltError @ cell={cell_index}, type={quad_type_str}, angle={tilt_err.tilt_angle}"
+                                )
+
+                    # -- K Error (focusing strength error) --
+                    # Apply per-quad k variation if configured
+                    k_error_key = (cell_index, quad_type_str)
+                    if k_error_key in self._k_actual_map:
+                        k_actual = self._k_actual_map[k_error_key]
+                        k_nominal_for_quad = (
+                            k_f_nominal if quad_type_str == "focusing" else k_d_nominal
+                        )
+                        # Recompute the quad transfer matrix with the actual k value
+                        M_4x4 = quad_transfer_matrix_4x4(
+                            k_actual, self.L_quad, self.use_thin_lens
+                        )
+                        updated_description = (
+                            elem["description"] + f" + KError(k_actual={k_actual:.6f})"
+                        )
+                        self.lattice_elements_positions[-1]["description"] = (
+                            updated_description
+                        )
+                        if self.verbose:
+                            print(
+                                f"\tApplied K Error @ cell={cell_index}, type={quad_type_str}, k_nominal={k_nominal_for_quad:.6f}, k_actual={k_actual:.6f}"
+                            )
 
                     # -- The OLD "Quad" misalignment error (displacement-based) --
                     # For each quad in cell, we used to add a dipole-kick block if there's a misalignment
-                    # We replicate that in 4x4 form. 
+                    # We replicate that in 4x4 form.
                     # theta_kick = k_nominal * delta * L_quad (sign depends on plane).
                     # define a small function to build that 4x4 "kick."
 
                     for quad_err in self.quad_errors:
-                        if (quad_err.FODO_index == cell_index
-                            and quad_err.quad_type == quad_type_str):
+                        if (
+                            quad_err.FODO_index == cell_index
+                            and quad_err.quad_type == quad_type_str
+                        ):
                             # e.g. plane='vertical' => we do a vertical angle
                             plane = quad_err.plane
                             delta = quad_err.delta
-                            L_q   = self.L_quad
-                            k_nominal = k_f_nominal if (quad_type_str=='focusing') else k_d_nominal
+                            L_q = self.L_quad
+                            k_nominal = (
+                                k_f_nominal
+                                if (quad_type_str == "focusing")
+                                else k_d_nominal
+                            )
 
                             # compute the small angle
                             theta_kick = k_nominal * delta * L_q
-                            theta_kick = -theta_kick # deflect particles in the opposite direction
+                            theta_kick = (
+                                -theta_kick
+                            )  # deflect particles in the opposite direction
                             # sign => if plane='vertical', means a rotation in y-plane
 
                             # Build a 4x4 that adds a small angle to x' or y'
@@ -1095,26 +1172,34 @@ class SynchrotronSimulator:
                             # horizontal misalignment => x' -> x' + theta_kick
                             # i.e. M_kick[1,0] = +theta_kick
                             # vertical => y' -> y' + theta_kick => M_kick[3,2] = +theta_kick
-                            if plane=='horizontal':
-                                D_kick = np.array([0.0, theta_kick, 0.0, 0.0], dtype=np.float64)  # [x, x_p, y, y_p]
-                            elif plane=='vertical':
-                                D_kick = np.array([0.0, 0.0, 0.0, theta_kick], dtype=np.float64)  # [x, x_p, y, y_p]
+                            if plane == "horizontal":
+                                D_kick = np.array(
+                                    [0.0, theta_kick, 0.0, 0.0], dtype=np.float64
+                                )  # [x, x_p, y, y_p]
+                            elif plane == "vertical":
+                                D_kick = np.array(
+                                    [0.0, 0.0, 0.0, theta_kick], dtype=np.float64
+                                )  # [x, x_p, y, y_p]
 
                             # Insert it as a zero-length element
                             self.M_lattice_4x4.append(M_kick)
                             self.D_lattice_4x1.append(D_kick)
 
-                            self.lattice_elements_positions.append({
-                                'cell_index': cell_index,
-                                'element_type': 'QuadMisalignmentKick',
-                                'description': f"Quad Displacement Kick after {description}, plane={plane}, delta={delta}",
-                                'start_s': cumulative_s,
-                                'end_s': cumulative_s
-                            })
+                            self.lattice_elements_positions.append(
+                                {
+                                    "cell_index": cell_index,
+                                    "element_type": "QuadMisalignmentKick",
+                                    "description": f"Quad Displacement Kick after {description}, plane={plane}, delta={delta}",
+                                    "start_s": cumulative_s,
+                                    "end_s": cumulative_s,
+                                }
+                            )
                             cell_elements_count += 1
 
                             if self.verbose:
-                                print(f"Applied old Quad misalignment at cell={cell_index}, quad={quad_type_str}, plane={plane}, delta={delta}, theta_kick={theta_kick}")
+                                print(
+                                    f"Applied old Quad misalignment at cell={cell_index}, quad={quad_type_str}, plane={plane}, delta={delta}, theta_kick={theta_kick}"
+                                )
 
                 # (NEW TILT, correct way) Append the (possibly tilted) M_4x4:
                 self.M_lattice_4x4.append(M_4x4)
@@ -1127,13 +1212,14 @@ class SynchrotronSimulator:
         self.len_per_rev = sum(self.len_per_cell_list)
 
         if self.verbose:
-            print(f"build_lattice() completed. Total elements per rev = {self.len_per_rev}")
-
+            print(
+                f"build_lattice() completed. Total elements per rev = {self.len_per_rev}"
+            )
 
     def compute_twiss_parameters(self):
         """
         Method 1:
-        Compute Twiss parameters (alpha, beta, gamma) for both planes, 
+        Compute Twiss parameters (alpha, beta, gamma) for both planes,
         by extracting the 2x2 diagonal blocks from the final 4x4 one-turn matrix.
 
         Steps:
@@ -1145,17 +1231,19 @@ class SynchrotronSimulator:
 
         NOTE:
         - This approach discards cross-plane coupling, so it is valid only if
-            the coupling is negligible or if you simply want approximate Twiss 
+            the coupling is negligible or if you simply want approximate Twiss
             in each plane.
-        - For a fully coupled 4D approach, you'd do a normal-form analysis 
+        - For a fully coupled 4D approach, you'd do a normal-form analysis
             rather than extracting sub-blocks.
 
         Returns:
             alpha_x, beta_x, gamma_x, alpha_y, beta_y, gamma_y
         """
-        if not getattr(self, 'M_lattice_4x4', None):
-            raise ValueError("4x4 lattice matrices (M_lattice_4x4) are not initialized. "
-                            "Please build the lattice before computing Twiss parameters.")
+        if not getattr(self, "M_lattice_4x4", None):
+            raise ValueError(
+                "4x4 lattice matrices (M_lattice_4x4) are not initialized. "
+                "Please build the lattice before computing Twiss parameters."
+            )
 
         # 1) Build the one-turn 4x4
         M_ring_4x4 = np.identity(4)
@@ -1169,15 +1257,16 @@ class SynchrotronSimulator:
 
         # Helper function to compute (alpha, beta, gamma) from a 2x2 one-turn matrix
         def twiss_from_2x2(M2):
-            m11, m12, m21, m22 = M2[0,0], M2[0,1], M2[1,0], M2[1,1]
-            cos_mu = np.clip((m11 + m22)/2, -1, 1)
+            m11, m12, m21, m22 = M2[0, 0], M2[0, 1], M2[1, 0], M2[1, 1]
+            cos_mu = np.clip((m11 + m22) / 2, -1, 1)
             mu = np.arccos(cos_mu)
-            if m21 > 0: mu = -mu
+            if m21 > 0:
+                mu = -mu
             sin_mu = np.sin(mu)
             if abs(sin_mu) < 1e-12:
                 return np.nan, np.nan, np.nan
-            beta  = m12 / sin_mu
-            alpha = (m11 - m22) / (2*sin_mu)
+            beta = m12 / sin_mu
+            alpha = (m11 - m22) / (2 * sin_mu)
             gamma = (1 + alpha**2) / beta
             return alpha, beta, gamma
 
@@ -1188,16 +1277,17 @@ class SynchrotronSimulator:
 
         return alpha_x, beta_x, gamma_x, alpha_y, beta_y, gamma_y
 
-
-    def generate_initial_states_from_twiss(self, alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, num_particles):
+    def generate_initial_states_from_twiss(
+        self, alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, num_particles
+    ):
         """
         Method 2:
         Generate initial particle states (x, x', y, y') that comply with given Twiss parameters and emittances.
         Particles are assumed to be drawn from a 2D Gaussian distribution in each plane defined by:
-        
+
         Sigma_x = epsilon_x * [[ beta_x,      -alpha_x ],
                             [ -alpha_x, (1+alpha_x^2)/beta_x ]]
-        
+
         Sigma_y = epsilon_y * [[ beta_y,      -alpha_y ],
                             [ -alpha_y, (1+alpha_y^2)/beta_y ]]
 
@@ -1219,25 +1309,29 @@ class SynchrotronSimulator:
         epsilon_y = 1e-6  # # 1 micrometer·rad emittance for vertical plane
 
         # Construct covariance matrices
-        Sigma_x = epsilon_x * np.array([[beta_x,      -alpha_x],
-                                        [-alpha_x,    gamma_x]])
-        Sigma_y = epsilon_y * np.array([[beta_y,      -alpha_y],
-                                        [-alpha_y,    gamma_y]])
+        Sigma_x = epsilon_x * np.array([[beta_x, -alpha_x], [-alpha_x, gamma_x]])
+        Sigma_y = epsilon_y * np.array([[beta_y, -alpha_y], [-alpha_y, gamma_y]])
 
         # Generate horizontal coordinates (x, x')
-        X_hor = np.random.multivariate_normal(mean=[0,0], cov=Sigma_x, size=num_particles)
+        X_hor = np.random.multivariate_normal(
+            mean=[0, 0], cov=Sigma_x, size=num_particles
+        )
         # Generate vertical coordinates (y, y')
-        X_ver = np.random.multivariate_normal(mean=[0,0], cov=Sigma_y, size=num_particles)
+        X_ver = np.random.multivariate_normal(
+            mean=[0, 0], cov=Sigma_y, size=num_particles
+        )
 
         # Combine into initial states array
-        initial_states = np.column_stack([X_hor[:,0], X_hor[:,1], X_ver[:,0], X_ver[:,1]])
+        initial_states = np.column_stack(
+            [X_hor[:, 0], X_hor[:, 1], X_ver[:, 0], X_ver[:, 1]]
+        )
         return initial_states
 
     def verify_transfer_matrices(self):
         """
         Verify that all 4x4 transfer matrices are symplectic and contain finite values.
 
-        A 4D matrix M is symplectic if M^T J M = J, where 
+        A 4D matrix M is symplectic if M^T J M = J, where
         J = [[0, 1, 0, 0],
             [-1,0, 0, 0],
             [0, 0, 0, 1],
@@ -1250,75 +1344,92 @@ class SynchrotronSimulator:
         """
         # print("verify_transfer_matrices..")
 
-        if not getattr(self, 'M_lattice_4x4', None):
+        if not getattr(self, "M_lattice_4x4", None):
             print("No 4x4 lattice matrices to verify. Possibly not built yet.")
             return
 
         # Define the symplectic form J in 4D
-        J = np.array([[0, 1, 0, 0],
-                    [-1,0, 0, 0],
-                    [0, 0, 0, 1],
-                    [0, 0, -1,0]], dtype=np.float64)
+        J = np.array(
+            [[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 0, 1], [0, 0, -1, 0]], dtype=np.float64
+        )
 
         for idx, M in enumerate(self.M_lattice_4x4):
             # 1) Check if all elements are finite
             if not np.all(np.isfinite(M)):
-                print(f"Warning: 4x4 transfer matrix M_lattice_4x4[{idx}] contains non-finite values.")
+                print(
+                    f"Warning: 4x4 transfer matrix M_lattice_4x4[{idx}] contains non-finite values."
+                )
                 continue
 
             # 2) Check symplectic condition
             # We compute M^T @ J @ M
-            M_tJ  = M.T @ J
-            test  = M_tJ @ M
-            diff  = test - J
-            norm  = np.linalg.norm(diff)  # e.g. Frobenius norm
+            M_tJ = M.T @ J
+            test = M_tJ @ M
+            diff = test - J
+            norm = np.linalg.norm(diff)  # e.g. Frobenius norm
 
             if norm > 1e-6:
-                print(f"Warning: 4x4 transfer matrix M_lattice_4x4[{idx}] not symplectic (norm diff={norm:.2e}).")
+                print(
+                    f"Warning: 4x4 transfer matrix M_lattice_4x4[{idx}] not symplectic (norm diff={norm:.2e})."
+                )
 
-            # 3) Optionally also check det(M). For a perfect symplectic in 4D, det(M)=1, but 
+            # 3) Optionally also check det(M). For a perfect symplectic in 4D, det(M)=1, but
             #    that alone doesn't guarantee no coupling errors. Still let's do it:
             detM = np.linalg.det(M)
             if abs(detM - 1.0) > 1e-6:
-                print(f"Warning: M_lattice_4x4[{idx}] has determinant={detM:.6f}, not ~1.0 => possibly non-symplectic.")
+                print(
+                    f"Warning: M_lattice_4x4[{idx}] has determinant={detM:.6f}, not ~1.0 => possibly non-symplectic."
+                )
 
     @classmethod
-    def find_feasible_lattices(cls, base_configurations, common_parameters, verbose=True):
+    def find_feasible_lattices(
+        cls, base_configurations, common_parameters, verbose=True
+    ):
         feasible_configs = []
         rejection_reasons = {}
 
         for base_config in base_configurations:
             merged_config = {**common_parameters, **base_config}
             # Extract parameters as before...
-            design_radius = merged_config['design_radius']
-            L_quad = merged_config['L_quad']
-            G = merged_config.get('G', None)
-            f = merged_config.get('f', None)
-            p = merged_config.get('p', None)
-            q = merged_config.get('q', None)
-            mag_field_range = merged_config.get('mag_field_range', (0.1, 2.0))
-            dipole_length_range = merged_config.get('dipole_length_range', (0.2, 14.0))
+            design_radius = merged_config["design_radius"]
+            L_quad = merged_config["L_quad"]
+            G = merged_config.get("G", None)
+            f = merged_config.get("f", None)
+            p = merged_config.get("p", None)
+            q = merged_config.get("q", None)
+            mag_field_range = merged_config.get("mag_field_range", (0.1, 2.0))
+            dipole_length_range = merged_config.get("dipole_length_range", (0.2, 14.0))
             # Tune range
-            horizontal_tune_range = merged_config.get('horizontal_tune_range', (0.1, 0.8))
-            vertical_tune_range = merged_config.get('vertical_tune_range', (0.1, 0.8))
+            horizontal_tune_range = merged_config.get(
+                "horizontal_tune_range", (0.1, 0.8)
+            )
+            vertical_tune_range = merged_config.get("vertical_tune_range", (0.1, 0.8))
             # Total dipole bending angle range
-            total_dipole_bending_angle_range = merged_config.get('total_dipole_bending_angle_range', (np.pi, 1.9 * np.pi))
+            total_dipole_bending_angle_range = merged_config.get(
+                "total_dipole_bending_angle_range", (np.pi, 1.9 * np.pi)
+            )
 
             # Possible values for n_FODO, n_Dipoles
-            if 'n_FODO' in merged_config:
-                n_FODO_values = [merged_config['n_FODO']]  # Use specified n_FODO
+            if "n_FODO" in merged_config:
+                n_FODO_values = [merged_config["n_FODO"]]  # Use specified n_FODO
             else:
                 n_FODO_values = range(2, 21)  # Number of FODO cells
 
-            if 'n_Dipoles' in merged_config:
-                n_Dipoles_values = [merged_config['n_Dipoles']]  # Use specified n_Dipoles
+            if "n_Dipoles" in merged_config:
+                n_Dipoles_values = [
+                    merged_config["n_Dipoles"]
+                ]  # Use specified n_Dipoles
             else:
                 n_Dipoles_values = range(2, 41, 2)  # Number of dipoles (even numbers)
 
             # Define total_dipole_bending_angle values
-            total_dipole_bending_angle_min, total_dipole_bending_angle_max = total_dipole_bending_angle_range
+            total_dipole_bending_angle_min, total_dipole_bending_angle_max = (
+                total_dipole_bending_angle_range
+            )
             total_dipole_bending_angle_values = np.linspace(
-                total_dipole_bending_angle_min, total_dipole_bending_angle_max, 10  # Adjust number of steps as needed
+                total_dipole_bending_angle_min,
+                total_dipole_bending_angle_max,
+                10,  # Adjust number of steps as needed
             )
 
             for total_dipole_bending_angle in total_dipole_bending_angle_values:
@@ -1326,8 +1437,10 @@ class SynchrotronSimulator:
                     for n_Dipoles in n_Dipoles_values:
                         # Ensure n_Dipoles is at least 2 * n_FODO
                         if n_Dipoles < 2 * n_FODO:
-                            reason = 'n_Dipoles less than 2 times n_FODO'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = "n_Dipoles less than 2 times n_FODO"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue  # Not enough dipoles to cover all FODO cells
 
                         # Calculate theta_dipole
@@ -1335,16 +1448,22 @@ class SynchrotronSimulator:
 
                         # Avoid unphysical theta_dipole values
                         if theta_dipole <= 0 or theta_dipole > 2 * np.pi:
-                            reason = 'Invalid theta_dipole value'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = "Invalid theta_dipole value"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue
 
                         L_dipole = theta_dipole * design_radius
 
                         # Check dipole length constraints
-                        if not (dipole_length_range[0] <= L_dipole <= dipole_length_range[1]):
-                            reason = 'Dipole length out of range'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                        if not (
+                            dipole_length_range[0] <= L_dipole <= dipole_length_range[1]
+                        ):
+                            reason = "Dipole length out of range"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue  # Dipole length out of acceptable range
 
                         # Calculate total dipole length
@@ -1357,28 +1476,38 @@ class SynchrotronSimulator:
                         total_straight_length = circumference - total_dipole_length
 
                         if total_straight_length <= 0:
-                            reason = 'Total straight length is negative or zero'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = "Total straight length is negative or zero"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue  # No room for straight sections
 
                         # Length per straight section
                         length_per_straight_section = total_straight_length / n_FODO
 
                         # Distribute length among drifts and quadrupoles
-                        total_quad_length_per_cell = 2 * L_quad  # One focusing and one defocusing quad per cell
-                        total_drift_length_per_cell = length_per_straight_section - total_quad_length_per_cell
+                        total_quad_length_per_cell = (
+                            2 * L_quad
+                        )  # One focusing and one defocusing quad per cell
+                        total_drift_length_per_cell = (
+                            length_per_straight_section - total_quad_length_per_cell
+                        )
 
                         if total_drift_length_per_cell <= 0:
-                            reason = 'Total drift length per cell is negative or zero'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = "Total drift length per cell is negative or zero"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue  # Not enough length for drifts
 
                         # Number of drifts per cell (assumed 4)
                         L_drift = total_drift_length_per_cell / 4
 
                         if L_drift <= 0:
-                            reason = 'Calculated drift length is negative or zero'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = "Calculated drift length is negative or zero"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue  # Invalid drift length
 
                         # Total length per FODO cell
@@ -1388,32 +1517,36 @@ class SynchrotronSimulator:
                         length_difference = abs(circumference - total_FODO_length)
 
                         if length_difference > 1e-6:
-                            reason = 'Total length does not match circumference'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = "Total length does not match circumference"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue  # Lengths do not match
 
                         check_config = {
-                            'design_radius': design_radius,
-                            'L_quad': L_quad,
-                            'n_FODO': n_FODO,
-                            'L_straight': length_per_straight_section,
-                            'L_dipole': L_dipole,
-                            'n_Dipoles': n_Dipoles,
-                            'L_drift': L_drift,
-                            'G': G,
-                            'p': p,
-                            'q': q,
-                            'total_dipole_bending_angle': total_dipole_bending_angle
+                            "design_radius": design_radius,
+                            "L_quad": L_quad,
+                            "n_FODO": n_FODO,
+                            "L_straight": length_per_straight_section,
+                            "L_dipole": L_dipole,
+                            "n_Dipoles": n_Dipoles,
+                            "L_drift": L_drift,
+                            "G": G,
+                            "p": p,
+                            "q": q,
+                            "total_dipole_bending_angle": total_dipole_bending_angle,
                         }
                         print("check_config = ", check_config)
 
                         # Prepare the merged configuration for the simulator
                         simulator_config = merged_config.copy()
-                        simulator_config['n_FODO'] = n_FODO
-                        simulator_config['L_straight'] = length_per_straight_section
-                        simulator_config['L_dipole'] = L_dipole
-                        simulator_config['n_Dipoles'] = n_Dipoles
-                        simulator_config['total_dipole_bending_angle'] = total_dipole_bending_angle
+                        simulator_config["n_FODO"] = n_FODO
+                        simulator_config["L_straight"] = length_per_straight_section
+                        simulator_config["L_dipole"] = L_dipole
+                        simulator_config["n_Dipoles"] = n_Dipoles
+                        simulator_config["total_dipole_bending_angle"] = (
+                            total_dipole_bending_angle
+                        )
 
                         # Initialize the simulator
                         try:
@@ -1421,14 +1554,16 @@ class SynchrotronSimulator:
                                 design_radius=design_radius,
                                 G=G,
                                 f=f,
-                                use_thin_lens=simulator_config.get('use_thin_lens', False),
+                                use_thin_lens=simulator_config.get(
+                                    "use_thin_lens", False
+                                ),
                                 L_quad=L_quad,
                                 L_straight=length_per_straight_section,
                                 p=p,
                                 q=q,
-                                n_turns=merged_config.get('n_turns', 100),
+                                n_turns=merged_config.get("n_turns", 100),
                                 total_dipole_bending_angle=total_dipole_bending_angle,
-                                num_particles=merged_config.get('num_particles', 1),
+                                num_particles=merged_config.get("num_particles", 1),
                                 n_FODO=n_FODO,
                                 L_dipole=L_dipole,
                                 n_Dipoles=n_Dipoles,
@@ -1437,9 +1572,12 @@ class SynchrotronSimulator:
                                 horizontal_tune_range=horizontal_tune_range,
                                 vertical_tune_range=vertical_tune_range,
                                 verbose=verbose,  # Suppress output during lattice search,
-                                figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
-                                correct_injection_offset=merged_config.get('correct_injection_offset', False)
-
+                                figs_save_dir=merged_config.get(
+                                    "figs_save_dir", "figs"
+                                ),
+                                correct_injection_offset=merged_config.get(
+                                    "correct_injection_offset", False
+                                ),
                             )
 
                             # Build the lattice and compute tunes
@@ -1447,56 +1585,82 @@ class SynchrotronSimulator:
                             simulator.compute_tunes()
 
                             # Check that the total length matches the circumference
-                            if abs(simulator.total_FODO_length - simulator.circumference) > 1e-6:
-                                reason = 'Total length does not match circumference after building lattice'
-                                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            if (
+                                abs(
+                                    simulator.total_FODO_length
+                                    - simulator.circumference
+                                )
+                                > 1e-6
+                            ):
+                                reason = "Total length does not match circumference after building lattice"
+                                rejection_reasons[reason] = (
+                                    rejection_reasons.get(reason, 0) + 1
+                                )
                                 continue  # Total length does not match circumference
 
                             # Check magnetic field constraints
                             if not (simulator.min_B <= simulator.B <= simulator.max_B):
-                                reason = 'Magnetic field out of bounds'
-                                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                                reason = "Magnetic field out of bounds"
+                                rejection_reasons[reason] = (
+                                    rejection_reasons.get(reason, 0) + 1
+                                )
                                 continue
 
                             # Check tune constraints
-                            if not (horizontal_tune_range[0] <= simulator.Qx <= horizontal_tune_range[1]):
-                                reason = 'Horizontal tune out of range'
-                                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            if not (
+                                horizontal_tune_range[0]
+                                <= simulator.Qx
+                                <= horizontal_tune_range[1]
+                            ):
+                                reason = "Horizontal tune out of range"
+                                rejection_reasons[reason] = (
+                                    rejection_reasons.get(reason, 0) + 1
+                                )
                                 print("\tsimulator.Qx = ", simulator.Qx)
                                 continue
-                            if not (vertical_tune_range[0] <= simulator.Qy <= vertical_tune_range[1]):
-                                reason = 'Vertical tune out of range'
-                                rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            if not (
+                                vertical_tune_range[0]
+                                <= simulator.Qy
+                                <= vertical_tune_range[1]
+                            ):
+                                reason = "Vertical tune out of range"
+                                rejection_reasons[reason] = (
+                                    rejection_reasons.get(reason, 0) + 1
+                                )
                                 print("\tsimulator.Qy = ", simulator.Qy)
                                 continue
 
                             # If all checks pass, save the configuration
                             config = {
-                                'design_radius': design_radius,
-                                'L_quad': L_quad,
-                                'n_FODO': n_FODO,
-                                'L_straight': length_per_straight_section,
-                                'L_dipole': L_dipole,
-                                'n_Dipoles': n_Dipoles,
-                                'L_drift': L_drift,
-                                'Qx': simulator.Qx,
-                                'Qy': simulator.Qy,
-                                'B': simulator.B,
-                                'B_rho': simulator.B_rho,
-                                'f': simulator.f,
-                                'G': G,
-                                'p': p,
-                                'q': q,
-                                'total_dipole_bending_angle': total_dipole_bending_angle
+                                "design_radius": design_radius,
+                                "L_quad": L_quad,
+                                "n_FODO": n_FODO,
+                                "L_straight": length_per_straight_section,
+                                "L_dipole": L_dipole,
+                                "n_Dipoles": n_Dipoles,
+                                "L_drift": L_drift,
+                                "Qx": simulator.Qx,
+                                "Qy": simulator.Qy,
+                                "B": simulator.B,
+                                "B_rho": simulator.B_rho,
+                                "f": simulator.f,
+                                "G": G,
+                                "p": p,
+                                "q": q,
+                                "total_dipole_bending_angle": total_dipole_bending_angle,
                             }
                             feasible_configs.append(config)
                         except ValueError as e:
-                            reason = f'ValueError: {str(e)}'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = f"ValueError: {str(e)}"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue
                         except Exception as e:
-                            reason = f'Exception: {str(e)}'
-                            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                            reason = f"Exception: {str(e)}"
+                            rejection_reasons[reason] = (
+                                rejection_reasons.get(reason, 0) + 1
+                            )
                             continue
 
         # After the loops, print out the rejection reasons
@@ -1517,22 +1681,22 @@ class SynchrotronSimulator:
             mag = np.abs(lam)
             if mag > 1e-10:
                 phase = np.angle(lam)
-                tune = phase/(2*np.pi)
+                tune = phase / (2 * np.pi)
                 if tune < 0:
                     tune += 1.0
                 angles.append(tune)
         angles.sort()
-        
+
         if self.verbose:
             print("one turn matrix:\n", M_4x4)
             print("compute_tune_4x4()/ evals = ", evals)
             print("compute_tune_4x4()/ angles = ", angles)
-        
+
         if len(angles) < 2:
             return (np.nan, np.nan)
-        if angles[0] == 0 or  angles[1] == 0:
+        if angles[0] == 0 or angles[1] == 0:
             raise Exception("Tunes are 0. Ring is unstable.")
-        
+
         print(f"\t\t\t=========== angles = {angles}")
         return (angles[0], angles[1])
 
@@ -1540,24 +1704,24 @@ class SynchrotronSimulator:
         """
         Compute horizontal/vertical tunes (Qx, Qy) from the 4x4 ring matrix.
         """
-        if not getattr(self, 'M_lattice_4x4', None):
+        if not getattr(self, "M_lattice_4x4", None):
             raise ValueError("Lattice 4x4 transfer matrices are not built.")
 
         M_ring_4x4 = np.identity(4)
         for idx, M_elem in enumerate(self.M_lattice_4x4):
             # M_ring_4x4 = M_elem @ M_ring_4x4
             M_ring_4x4 = M_ring_4x4 @ M_elem
-        
+
         # print("One-turn 4x4 matrix =\n", M_ring_4x4)
-        
+
         try:
             Q1, Q2 = self.compute_tune_4x4(M_ring_4x4)
             if self.verbose:
                 print("compute_tune_4x4()/ ", Q1, Q2)
             self.Qy = Q1
             self.Qx = Q2
-            self.mu_x = 2*np.pi*self.Qx
-            self.mu_y = 2*np.pi*self.Qy
+            self.mu_x = 2 * np.pi * self.Qx
+            self.mu_y = 2 * np.pi * self.Qy
         except Exception as e:
             raise RuntimeError(f"Error computing tunes: {e}")
 
@@ -1566,9 +1730,13 @@ class SynchrotronSimulator:
 
         # Range checks
         if not (self.min_Qx <= self.Qx <= self.max_Qx):
-            raise ValueError(f"Horizontal Tune (Qx={self.Qx:.6f}) out of range [{self.min_Qx}, {self.max_Qx}].")
+            raise ValueError(
+                f"Horizontal Tune (Qx={self.Qx:.6f}) out of range [{self.min_Qx}, {self.max_Qx}]."
+            )
         if not (self.min_Qy <= self.Qy <= self.max_Qy):
-            raise ValueError(f"Vertical Tune (Qy={self.Qy:.6f}) out of range [{self.min_Qy}, {self.max_Qy}].")
+            raise ValueError(
+                f"Vertical Tune (Qy={self.Qy:.6f}) out of range [{self.min_Qy}, {self.max_Qy}]."
+            )
 
         if self.verbose:
             print("compute_tunes()/", self.Qx, self.Qy)
@@ -1596,8 +1764,8 @@ class SynchrotronSimulator:
         mu_y = np.arccos(0.5 * (My[0, 0] + My[1, 1]))
 
         # --- Total tune ---
-        tunes['Qx'] = (self.n_FODO * mu_x) / (2 * np.pi)
-        tunes['Qy'] = (self.n_FODO * mu_y) / (2 * np.pi)
+        tunes["Qx"] = (self.n_FODO * mu_x) / (2 * np.pi)
+        tunes["Qy"] = (self.n_FODO * mu_y) / (2 * np.pi)
 
         # --- Compute and print beta functions ---
         beta_x = Mx[0, 1] / np.sin(mu_x) if np.sin(mu_x) != 0 else np.inf
@@ -1607,7 +1775,6 @@ class SynchrotronSimulator:
         print("tunes: ", tunes)
 
         return tunes
-
 
     def compute_full_oscillation_turns(self, Q):
         """Compute the number of turns to complete a full oscillation."""
@@ -1625,14 +1792,14 @@ class SynchrotronSimulator:
         """
         4D closed orbit: solve (I - M_ring)*X_co=0
         """
-        if not getattr(self, 'M_lattice_4x4', None):
+        if not getattr(self, "M_lattice_4x4", None):
             raise ValueError("M_lattice_4x4 lattice not built.")
-        if not getattr(self, 'D_lattice_4x1', None):
+        if not getattr(self, "D_lattice_4x1", None):
             raise ValueError("D_lattice_4x1 lattice not built.")
 
         M_ring_4x4 = np.identity(4)
         D_ring_4x1 = np.zeros(4, dtype=np.float64)
-        
+
         for M_elem, D_elem in zip(self.M_lattice_4x4, self.D_lattice_4x1):
             # D_ring_4x1 = M_elem @ D_ring_4x1 + D_elem
             # M_ring_4x4 = M_elem @ M_ring_4x4
@@ -1665,39 +1832,44 @@ class SynchrotronSimulator:
         # BPM arrays - use memory-mapped files if requested
         if self.n_FODO:
             shape = (self.num_particles, self.n_turns, self.n_FODO)
-            
+
             if self.use_memmap:
                 # Create unique filename prefix for this simulation
                 import time
                 import uuid
+
                 timestamp = int(time.time() * 1000)
                 unique_id = uuid.uuid4().hex[:8]
                 prefix = f"bpm_{timestamp}_{unique_id}"
-                
+
                 # Create memmap files for each BPM array
                 self._memmap_files = {}
                 bpm_dir = self.memmap_dir
                 os.makedirs(bpm_dir, exist_ok=True)
-                
-                for key in ['x', 'y', 'xp', 'yp']:
+
+                for key in ["x", "y", "xp", "yp"]:
                     filepath = os.path.join(bpm_dir, f"{prefix}_{key}.dat")
                     self._memmap_files[key] = filepath
                     # Create memmap array (float64) - 'w+' mode creates or overwrites
-                    self.bpm_readings[key] = np.memmap(filepath, dtype=np.float64, mode='w+', shape=shape)
-                
+                    self.bpm_readings[key] = np.memmap(
+                        filepath, dtype=np.float64, mode="w+", shape=shape
+                    )
+
                 # Also create a regular array for 's' if needed, or skip it
-                self.bpm_readings['s'] = np.zeros((self.num_particles, self.n_turns, self.n_FODO))
-                
+                self.bpm_readings["s"] = np.zeros(
+                    (self.num_particles, self.n_turns, self.n_FODO)
+                )
+
                 if self.verbose:
                     print(f"[Memmap] Using memory-mapped files in {bpm_dir}")
                     print(f"[Memmap] Files: {list(self._memmap_files.values())}")
             else:
                 # Regular in-memory arrays
-                self.bpm_readings['x']  = np.zeros(shape, dtype=np.float64)
-                self.bpm_readings['y']  = np.zeros(shape, dtype=np.float64)
-                self.bpm_readings['xp'] = np.zeros(shape, dtype=np.float64)
-                self.bpm_readings['yp'] = np.zeros(shape, dtype=np.float64)
-                self.bpm_readings['s'] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings["x"] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings["y"] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings["xp"] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings["yp"] = np.zeros(shape, dtype=np.float64)
+                self.bpm_readings["s"] = np.zeros(shape, dtype=np.float64)
 
         x_co, y_co = self.compute_closed_orbit()
         print(f"Closed orbit computation: x_co={x_co}, y_co={y_co}")
@@ -1718,23 +1890,27 @@ class SynchrotronSimulator:
         # self.calculate_beam_size()
 
     def _simulate_cpu(self, initial_states, x_co, y_co):
+        from numba import cuda
+
         """CPU-based simulation in 4D."""
         nb_particles = len(initial_states)
         debug_sim_rate = 0.2
-        debug_prcnt = list(range(1, int((1/debug_sim_rate)) + 1))
+        debug_prcnt = list(range(1, int((1 / debug_sim_rate)) + 1))
 
         init_np = np.array(initial_states, dtype=np.float64)
         # add closed orbit
         if self.correct_injection_offset:
             for i in range(nb_particles):
-                init_np[i,0] += x_co[0]
-                init_np[i,1] += x_co[1]
-                init_np[i,2] += y_co[0]
-                init_np[i,3] += y_co[1]
+                init_np[i, 0] += x_co[0]
+                init_np[i, 1] += x_co[1]
+                init_np[i, 2] += y_co[0]
+                init_np[i, 3] += y_co[1]
 
         for p_idx in range(nb_particles):
             # self.verbose and
-            if (p_idx * self.n_turns) % ((nb_particles * self.n_turns) * debug_sim_rate) == 0 and debug_prcnt:
+            if (p_idx * self.n_turns) % (
+                (nb_particles * self.n_turns) * debug_sim_rate
+            ) == 0 and debug_prcnt:
                 progress_prct = int(debug_prcnt.pop(0) * debug_sim_rate * 100)
                 print(f"\t {progress_prct}% ...")
 
@@ -1745,19 +1921,21 @@ class SynchrotronSimulator:
                 for cell_index in range(self.n_FODO):
                     n_elems = self.len_per_cell_list[cell_index]
                     for elem_in_cell in range(n_elems):
-                        global_elem_idx = sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
-                        
+                        global_elem_idx = (
+                            sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
+                        )
+
                         M_4x4 = self.M_lattice_4x4[global_elem_idx]
                         D_4x1 = self.D_lattice_4x1[global_elem_idx]
                         # linear inhomogeneous transform
                         X_4d = M_4x4 @ X_4d + D_4x1
-                        
+
                         # elem_idx_global += 1`
 
-                    self.bpm_readings['x'][p_idx, turn, cell_index]  = X_4d[0]
-                    self.bpm_readings['y'][p_idx, turn, cell_index]  = X_4d[2]
-                    self.bpm_readings['xp'][p_idx, turn, cell_index] = X_4d[1]
-                    self.bpm_readings['yp'][p_idx, turn, cell_index] = X_4d[3]
+                    self.bpm_readings["x"][p_idx, turn, cell_index] = X_4d[0]
+                    self.bpm_readings["y"][p_idx, turn, cell_index] = X_4d[2]
+                    self.bpm_readings["xp"][p_idx, turn, cell_index] = X_4d[1]
+                    self.bpm_readings["yp"][p_idx, turn, cell_index] = X_4d[3]
 
             init_np[p_idx] = X_4d
 
@@ -1788,19 +1966,39 @@ class SynchrotronSimulator:
 
         d_M_arr_4d = cuda.to_device(M_arr_4d)
         d_D_arr_4d = cuda.to_device(D_arr_4d)
-        d_len_per_cell = cuda.to_device(np.array(self.len_per_cell_list, dtype=np.int32))
+        d_len_per_cell = cuda.to_device(
+            np.array(self.len_per_cell_list, dtype=np.int32)
+        )
 
-        d_bpm_x  = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
-        d_bpm_y  = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
-        d_bpm_xp = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
-        d_bpm_yp = cuda.device_array((self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64)
+        d_bpm_x = cuda.device_array(
+            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+        )
+        d_bpm_y = cuda.device_array(
+            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+        )
+        d_bpm_xp = cuda.device_array(
+            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+        )
+        d_bpm_yp = cuda.device_array(
+            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+        )
 
-        threads_per_block = 256 # multiples of 32; max is 1024 (for Turing arch., compute capability 7.5 and above)
+        threads_per_block = 256  # multiples of 32; max is 1024 (for Turing arch., compute capability 7.5 and above)
         blocks_per_grid = (nb_particles + (threads_per_block - 1)) // threads_per_block
 
         @cuda.jit
-        def simulate_kernel_4D(d_states, d_M_elem, d_D_elem, len_per_cell, n_FODO, n_turns,
-                            bpm_x, bpm_y, bpm_xp, bpm_yp):
+        def simulate_kernel_4D(
+            d_states,
+            d_M_elem,
+            d_D_elem,
+            len_per_cell,
+            n_FODO,
+            n_turns,
+            bpm_x,
+            bpm_y,
+            bpm_xp,
+            bpm_yp,
+        ):
             pid = cuda.grid(1)
             if pid >= d_states.shape[0]:
                 return
@@ -1857,8 +2055,8 @@ class SynchrotronSimulator:
                         x3 = y3 + D3
 
                     # Record BPM readings
-                    bpm_x[pid, turn, cell_idx]  = x0
-                    bpm_y[pid, turn, cell_idx]  = x2
+                    bpm_x[pid, turn, cell_idx] = x0
+                    bpm_y[pid, turn, cell_idx] = x2
                     bpm_xp[pid, turn, cell_idx] = x1
                     bpm_yp[pid, turn, cell_idx] = x3
 
@@ -1870,72 +2068,95 @@ class SynchrotronSimulator:
 
         # Launch kernel
         simulate_kernel_4D[blocks_per_grid, threads_per_block](
-            d_states, d_M_arr_4d, d_D_arr_4d, d_len_per_cell, self.n_FODO, self.n_turns,
-            d_bpm_x, d_bpm_y, d_bpm_xp, d_bpm_yp
+            d_states,
+            d_M_arr_4d,
+            d_D_arr_4d,
+            d_len_per_cell,
+            self.n_FODO,
+            self.n_turns,
+            d_bpm_x,
+            d_bpm_y,
+            d_bpm_xp,
+            d_bpm_yp,
         )
         cuda.synchronize()
 
         # Copy back results
         final_states_gpu = d_states.copy_to_host()
-        self.bpm_readings['x']  = d_bpm_x.copy_to_host()
-        self.bpm_readings['y']  = d_bpm_y.copy_to_host()
-        self.bpm_readings['xp'] = d_bpm_xp.copy_to_host()
-        self.bpm_readings['yp'] = d_bpm_yp.copy_to_host()
+        self.bpm_readings["x"] = d_bpm_x.copy_to_host()
+        self.bpm_readings["y"] = d_bpm_y.copy_to_host()
+        self.bpm_readings["xp"] = d_bpm_xp.copy_to_host()
+        self.bpm_readings["yp"] = d_bpm_yp.copy_to_host()
 
     def _simulate_gpu_torch(self, initial_states, x_co=None, y_co=None):
         nb_particles = len(initial_states)
-        if nb_particles == 0: return
+        if nb_particles == 0:
+            return
 
         # Correctly specify the device with an index for the GTX 2060
-        device_idx = 0 
-        device = torch.device(f'cuda:{device_idx}' if torch.cuda.is_available() else 'cpu')
-        
+        device_idx = 0
+        device = torch.device(
+            f"cuda:{device_idx}" if torch.cuda.is_available() else "cpu"
+        )
+
         # 1. DYNAMIC STRATEGY INFERENCE (VRAM & RAM Check)
-        chunk_size = self.max_iter_per_infer if self.max_iter_per_infer > 0 else self.n_turns
-        
+        chunk_size = (
+            self.max_iter_per_infer if self.max_iter_per_infer > 0 else self.n_turns
+        )
+
         # Calculate estimated VRAM for one GPU chunk buffer (float64 = 8 bytes)
         # Total memory for 4 coordinates: (particles * chunk_turns * n_FODO * 4 coordinates * 8 bytes)
         vram_req_bytes = nb_particles * chunk_size * self.n_FODO * 4 * 8
-        
-        use_streaming = True # Default to the stable STREAMING approach
-        
-        if device.type.startswith('cuda'):
+
+        use_streaming = True  # Default to the stable STREAMING approach
+
+        if device.type.startswith("cuda"):
             # Get free and total VRAM in bytes for the specific device index
             free_vram, total_vram = torch.cuda.mem_get_info(device_idx)
-            
+
             # Check System RAM (psutil) to see if we can even hold the full BPM array in memory
             # Total BPM data = particles * n_turns * n_FODO * 4 * 8
             # times 8 bytes because we are using float64)
             total_data_req_bytes = nb_particles * self.n_turns * self.n_FODO * 4 * 8
             available_ram = psutil.virtual_memory().available
-            
+
             # Use BUFFERED only if VRAM requirement is < 90% of FREE VRAM
             if vram_req_bytes < (free_vram * 0.95):
                 use_streaming = False
                 if self.verbose:
-                    print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB | Available: {free_vram/1e6:.1f}MB. Strategy: BUFFERED.")
+                    print(
+                        f"[Strategy] VRAM Req: {vram_req_bytes / 1e6:.1f}MB | Available: {free_vram / 1e6:.1f}MB. Strategy: BUFFERED."
+                    )
             else:
                 if self.verbose:
-                    print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB exceeds safety. Strategy: STREAMING.")
-            
+                    print(
+                        f"[Strategy] VRAM Req: {vram_req_bytes / 1e6:.1f}MB exceeds safety. Strategy: STREAMING."
+                    )
+
             # Force Memmap if the total simulation exceeds 90% of available System RAM
-            print(f"[PSUTIL] RAM Req: {total_data_req_bytes/1e9:.1f}GB | Available: ({available_ram/1e9:.1f}GB). ")
+            print(
+                f"[PSUTIL] RAM Req: {total_data_req_bytes / 1e9:.1f}GB | Available: ({available_ram / 1e9:.1f}GB). "
+            )
             if total_data_req_bytes > (available_ram * 0.93) and not self.use_memmap:
                 if self.verbose:
-                    print(f"[Warning] Total data ({total_data_req_bytes/1e9:.1f}GB) exceeds RAM. Forcing Memmap.")
+                    print(
+                        f"[Warning] Total data ({total_data_req_bytes / 1e9:.1f}GB) exceeds RAM. Forcing Memmap."
+                    )
                 self.use_memmap = True
 
         # 2. INITIALIZATION & PRE-COMPUTATION
         init_np = np.array(initial_states, dtype=np.float64)
         if self.correct_injection_offset and x_co is not None and y_co is not None:
-            init_np[:, 0] += x_co[0]; init_np[:, 1] += x_co[1]
-            init_np[:, 2] += y_co[0]; init_np[:, 3] += y_co[1]
+            init_np[:, 0] += x_co[0]
+            init_np[:, 1] += x_co[1]
+            init_np[:, 2] += y_co[0]
+            init_np[:, 3] += y_co[1]
 
         states = torch.from_numpy(init_np).to(device).to(torch.float64)
-        
+
         # Pre-calculate cell matrices using the helper logic
         cell_M_stack, cell_D_stack = self._precompute_cell_matrices(device)
-        
+
         # Allocate Output (respects self.use_memmap forced above if necessary)
         bpm_x, bpm_y, bpm_xp, bpm_yp = self._allocate_bpm_outputs(nb_particles)
 
@@ -1949,28 +2170,40 @@ class SynchrotronSimulator:
             cur_len = t_end - t_start
 
             if self.verbose and c_idx in log_indices:
-                print(f"[PyTorch GPU] {('STREAMING' if use_streaming else 'BUFFERED')} {int(100*c_idx/n_chunks)}%")
+                print(
+                    f"[PyTorch GPU] {('STREAMING' if use_streaming else 'BUFFERED')} {int(100 * c_idx / n_chunks)}%"
+                )
 
             if not use_streaming:
                 # BUFFERED-in-gpu Logic: High speed for fits-in-memory data
-                buf = torch.zeros((nb_particles, cur_len, self.n_FODO, 4), device=device, dtype=torch.float64)
+                buf = torch.zeros(
+                    (nb_particles, cur_len, self.n_FODO, 4),
+                    device=device,
+                    dtype=torch.float64,
+                )
                 for t_rel in range(cur_len):
                     for cell_idx in range(self.n_FODO):
-                        states = torch.matmul(states, cell_M_stack[cell_idx]) + cell_D_stack[cell_idx]
+                        states = (
+                            torch.matmul(states, cell_M_stack[cell_idx])
+                            + cell_D_stack[cell_idx]
+                        )
                         buf[:, t_rel, cell_idx, :] = states
-                
+
                 # Batch transfer to CPU
                 cpu_chunk = buf.cpu().numpy()
                 bpm_x[:, t_start:t_end, :] = cpu_chunk[..., 0]
                 bpm_xp[:, t_start:t_end, :] = cpu_chunk[..., 1]
                 bpm_y[:, t_start:t_end, :] = cpu_chunk[..., 2]
                 bpm_yp[:, t_start:t_end, :] = cpu_chunk[..., 3]
-                del buf # Free GPU memory immediately
+                del buf  # Free GPU memory immediately
             else:
                 # STREAMING-to-cpu Logic: Direct write to handle 100,000+ turns safely
                 for turn in range(t_start, t_end):
                     for cell_idx in range(self.n_FODO):
-                        states = torch.matmul(states, cell_M_stack[cell_idx]) + cell_D_stack[cell_idx]
+                        states = (
+                            torch.matmul(states, cell_M_stack[cell_idx])
+                            + cell_D_stack[cell_idx]
+                        )
                         cpu_s = states.cpu().numpy()
                         bpm_x[:, turn, cell_idx] = cpu_s[:, 0]
                         bpm_xp[:, turn, cell_idx] = cpu_s[:, 1]
@@ -1978,37 +2211,45 @@ class SynchrotronSimulator:
                         bpm_yp[:, turn, cell_idx] = cpu_s[:, 3]
 
             gc.collect()
-            
-            if device.type.startswith('cuda'):
-                torch.cuda.empty_cache()    
 
-        self.bpm_readings.update({'x': bpm_x, 'y': bpm_y, 'xp': bpm_xp, 'yp': bpm_yp})
+            if device.type.startswith("cuda"):
+                torch.cuda.empty_cache()
+
+        self.bpm_readings.update({"x": bpm_x, "y": bpm_y, "xp": bpm_xp, "yp": bpm_yp})
 
     def _precompute_cell_matrices(self, device):
         """
-        Combines individual element matrices into a single cell-wise transfer matrix 
+        Combines individual element matrices into a single cell-wise transfer matrix
         and kick vector to optimize GPU throughput.
         """
         cell_M_combined = []
         cell_D_combined = []
-        
+
         len_per_cell = np.array(self.len_per_cell_list, dtype=np.int64)
         cell_starts = np.cumsum(np.concatenate([[0], len_per_cell[:-1]]))
 
         for cell_idx in range(self.n_FODO):
             n_elems = len_per_cell[cell_idx]
             global_base_idx = cell_starts[cell_idx]
-            
+
             # Initialize cell-level identity and zero-kick
             M_total = torch.eye(4, device=device, dtype=torch.float64)
             D_total = torch.zeros(4, device=device, dtype=torch.float64)
-            
+
             for elem_idx in range(n_elems):
                 idx = global_base_idx + elem_idx
                 # Convert lattice matrices to PyTorch tensors
-                M_e = torch.from_numpy(self.M_lattice_4x4[idx]).to(device).to(torch.float64)
-                D_e = torch.from_numpy(self.D_lattice_4x1[idx]).to(device).to(torch.float64)
-                
+                M_e = (
+                    torch.from_numpy(self.M_lattice_4x4[idx])
+                    .to(device)
+                    .to(torch.float64)
+                )
+                D_e = (
+                    torch.from_numpy(self.D_lattice_4x1[idx])
+                    .to(device)
+                    .to(torch.float64)
+                )
+
                 # Composition logic: X_new = M_e @ (M_prev @ X + D_prev) + D_e
                 D_total = torch.matmul(M_e, D_total) + D_e
                 M_total = torch.matmul(M_e, M_total)
@@ -2018,37 +2259,48 @@ class SynchrotronSimulator:
             cell_D_combined.append(D_total)
 
         return torch.stack(cell_M_combined), torch.stack(cell_D_combined)
-    
+
     def _allocate_bpm_outputs(self, nb_particles):
         """
-        Allocates arrays for BPM readings. 
+        Allocates arrays for BPM readings.
         Uses memory-mapped files on SSD if self.use_memmap is True.
         """
         bpm_shape = (nb_particles, self.n_turns, self.n_FODO)
-        
+
         if self.use_memmap:
             import uuid
+
             # Ensure the directory exists
             os.makedirs(self.memmap_dir, exist_ok=True)
             unique_id = uuid.uuid4().hex[:8]
-            
+
             # Define file paths
             self._memmap_files = {
-                'x': os.path.join(self.memmap_dir, f'bpm_x_{unique_id}.dat'),
-                'y': os.path.join(self.memmap_dir, f'bpm_y_{unique_id}.dat'),
-                'xp': os.path.join(self.memmap_dir, f'bpm_xp_{unique_id}.dat'),
-                'yp': os.path.join(self.memmap_dir, f'bpm_yp_{unique_id}.dat')
+                "x": os.path.join(self.memmap_dir, f"bpm_x_{unique_id}.dat"),
+                "y": os.path.join(self.memmap_dir, f"bpm_y_{unique_id}.dat"),
+                "xp": os.path.join(self.memmap_dir, f"bpm_xp_{unique_id}.dat"),
+                "yp": os.path.join(self.memmap_dir, f"bpm_yp_{unique_id}.dat"),
             }
-            
+
             # Create the memmap arrays (mode 'w+' creates the file)
-            bpm_x = np.memmap(self._memmap_files['x'], dtype=np.float64, mode='w+', shape=bpm_shape)
-            bpm_y = np.memmap(self._memmap_files['y'], dtype=np.float64, mode='w+', shape=bpm_shape)
-            bpm_xp = np.memmap(self._memmap_files['xp'], dtype=np.float64, mode='w+', shape=bpm_shape)
-            bpm_yp = np.memmap(self._memmap_files['yp'], dtype=np.float64, mode='w+', shape=bpm_shape)
-            
+            bpm_x = np.memmap(
+                self._memmap_files["x"], dtype=np.float64, mode="w+", shape=bpm_shape
+            )
+            bpm_y = np.memmap(
+                self._memmap_files["y"], dtype=np.float64, mode="w+", shape=bpm_shape
+            )
+            bpm_xp = np.memmap(
+                self._memmap_files["xp"], dtype=np.float64, mode="w+", shape=bpm_shape
+            )
+            bpm_yp = np.memmap(
+                self._memmap_files["yp"], dtype=np.float64, mode="w+", shape=bpm_shape
+            )
+
             if self.verbose:
-                print(f"[Memmap] Allocated 4x {bpm_shape} arrays on SSD at {self.memmap_dir}")
-                
+                print(
+                    f"[Memmap] Allocated 4x {bpm_shape} arrays on SSD at {self.memmap_dir}"
+                )
+
             return bpm_x, bpm_y, bpm_xp, bpm_yp
         else:
             # Standard RAM allocation
@@ -2061,20 +2313,20 @@ class SynchrotronSimulator:
     def cleanup_memmap(self):
         """
         Clean up memory-mapped files.
-        
+
         This method should be called after finishing using the simulator with memmap=True
         to delete the temporary memory-mapped files and free disk space.
         """
-        if hasattr(self, '_memmap_files') and self._memmap_files:
+        if hasattr(self, "_memmap_files") and self._memmap_files:
             # Force garbage collection to release memmap references
             gc.collect()
-            
+
             # Delete memmap arrays and files
-            for key in ['x', 'y', 'xp', 'yp']:
+            for key in ["x", "y", "xp", "yp"]:
                 if key in self.bpm_readings and self.bpm_readings[key] is not None:
                     # Delete the memmap object (this flushes and closes the file)
                     del self.bpm_readings[key]
-                
+
                 # Delete the file if it exists
                 if key in self._memmap_files:
                     filepath = self._memmap_files[key]
@@ -2085,43 +2337,50 @@ class SynchrotronSimulator:
                                 print(f"[Memmap] Removed file: {filepath}")
                         except Exception as e:
                             if self.verbose:
-                                print(f"[Memmap] Warning: Could not remove file {filepath}: {e}")
-            
+                                print(
+                                    f"[Memmap] Warning: Could not remove file {filepath}: {e}"
+                                )
+
             self._memmap_files = {}
-            
+
             if self.verbose:
                 print("[Memmap] Cleanup complete.")
 
     def calculate_beam_size(self):
         """Calculate beam size (RMS width and height) from BPM readings.
-        
+
         Memory-efficient version: computes std directly without creating flattened copies.
         """
-        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
+        if self.bpm_readings["x"] is None or self.bpm_readings["y"] is None:
             print("BPMs are not placed in the lattice.")
             return
 
         # Compute beam sizes (standard deviations) directly on the array
         # np.std(arr) computes over all elements without creating a copy
-        self.epsilon_horizontal = np.std(self.bpm_readings['x'])
-        self.epsilon_vertical = np.std(self.bpm_readings['y'])
+        self.epsilon_horizontal = np.std(self.bpm_readings["x"])
+        self.epsilon_vertical = np.std(self.bpm_readings["y"])
 
-    def compute_beam_aperture(self, initial_amplitude_range=(1e-5, 1e-2), n_amplitude_points=50, 
-                              n_turns_for_tracking=100, verbose=True):
+    def compute_beam_aperture(
+        self,
+        initial_amplitude_range=(1e-5, 1e-2),
+        n_amplitude_points=50,
+        n_turns_for_tracking=100,
+        verbose=True,
+    ):
         """
         Compute the dynamic aperture of the lattice by tracking particles with varying amplitudes.
-        
+
         The dynamic aperture defines the maximum stable oscillation amplitude for particles
         in the storage ring. Beyond this aperture, particles are lost due to nonlinearities
         or hit physical apertures.
-        
+
         Parameters:
             initial_amplitude_range (tuple): (min_amplitude, max_amplitude) in meters.
                 Defines the range of initial amplitudes to test.
             n_amplitude_points (int): Number of amplitude points to test across the range.
             n_turns_for_tracking (int): Number of turns to track each particle to determine stability.
             verbose (bool): Whether to print progress information.
-            
+
         Returns:
             dict: Dictionary containing:
                 - 'amplitudes': Array of initial amplitudes tested (meters)
@@ -2131,61 +2390,78 @@ class SynchrotronSimulator:
         """
         if verbose:
             print(f"\nComputing dynamic aperture...")
-            print(f"  Amplitude range: {initial_amplitude_range[0]:.2e} to {initial_amplitude_range[1]:.2e} m")
+            print(
+                f"  Amplitude range: {initial_amplitude_range[0]:.2e} to {initial_amplitude_range[1]:.2e} m"
+            )
             print(f"  Amplitude points: {n_amplitude_points}")
             print(f"  Tracking turns: {n_turns_for_tracking}")
-        
+
         # Generate amplitude points (logarithmic spacing for better coverage)
-        amplitudes = np.logspace(np.log10(initial_amplitude_range[0]), 
-                                 np.log10(initial_amplitude_range[1]), 
-                                 n_amplitude_points)
-        
+        amplitudes = np.logspace(
+            np.log10(initial_amplitude_range[0]),
+            np.log10(initial_amplitude_range[1]),
+            n_amplitude_points,
+        )
+
         # Track survival for each amplitude
         survived_turns = np.zeros(n_amplitude_points)
-        
+
         # Use the lattice to track particles
         for amp_idx, amplitude in enumerate(amplitudes):
             if verbose and amp_idx % 10 == 0:
-                print(f"  Testing amplitude {amp_idx+1}/{n_amplitude_points}: {amplitude:.2e} m")
-            
+                print(
+                    f"  Testing amplitude {amp_idx + 1}/{n_amplitude_points}: {amplitude:.2e} m"
+                )
+
             # Initialize particle at this amplitude (horizontal plane)
             initial_state = np.array([amplitude, 0.0, 0.0, 0.0], dtype=np.float64)
-            
+
             # Track particle
             state = initial_state.copy()
             turns_survived = 0
-            
+
             for turn in range(n_turns_for_tracking):
                 for cell_index in range(self.n_FODO):
                     n_elems = self.len_per_cell_list[cell_index]
                     for elem_in_cell in range(n_elems):
-                        global_elem_idx = sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
-                        
+                        global_elem_idx = (
+                            sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
+                        )
+
                         M_4x4 = self.M_lattice_4x4[global_elem_idx]
                         D_4x1 = self.D_lattice_4x1[global_elem_idx]
-                        
+
                         # Linear propagation
                         state = M_4x4 @ state + D_4x1
-                        
+
                         # Check if particle is lost (exceeded physical aperture)
                         # Use a reasonable physical aperture (e.g., 50mm = 0.05m)
                         physical_aperture = 0.05  # 50 mm
-                        if np.abs(state[0]) > physical_aperture or np.abs(state[2]) > physical_aperture:
+                        if (
+                            np.abs(state[0]) > physical_aperture
+                            or np.abs(state[2]) > physical_aperture
+                        ):
                             break
-                    
-                    if np.abs(state[0]) > physical_aperture or np.abs(state[2]) > physical_aperture:
+
+                    if (
+                        np.abs(state[0]) > physical_aperture
+                        or np.abs(state[2]) > physical_aperture
+                    ):
                         break
-                
-                if np.abs(state[0]) > physical_aperture or np.abs(state[2]) > physical_aperture:
+
+                if (
+                    np.abs(state[0]) > physical_aperture
+                    or np.abs(state[2]) > physical_aperture
+                ):
                     break
-                    
+
                 turns_survived += 1
-            
+
             survived_turns[amp_idx] = turns_survived
-        
+
         # Calculate survival fraction
         survival_fraction = survived_turns / n_turns_for_tracking
-        
+
         # Determine dynamic aperture: amplitude where particle survives > 90% of turns
         stable_mask = survival_fraction >= 0.9
         if np.any(stable_mask):
@@ -2193,187 +2469,64 @@ class SynchrotronSimulator:
         else:
             # If no stable region found, use the maximum amplitude that had any survival
             dynamic_aperture = amplitudes[np.argmax(survived_turns)]
-        
+
         if verbose:
             print(f"\n  Dynamic aperture (90% survival): {dynamic_aperture:.2e} m")
             print(f"  Maximum turns survived: {int(np.max(survived_turns))}")
-        
+
         # Store results
         self.dynamic_aperture_results = {
-            'amplitudes': amplitudes,
-            'survived_turns': survived_turns,
-            'dynamic_aperture': dynamic_aperture,
-            'survival_fraction': survival_fraction,
-            'physical_aperture': 0.05  # 50 mm
+            "amplitudes": amplitudes,
+            "survived_turns": survived_turns,
+            "dynamic_aperture": dynamic_aperture,
+            "survival_fraction": survival_fraction,
+            "physical_aperture": 0.05,  # 50 mm
         }
-        
+
         return self.dynamic_aperture_results
 
-    def plot_dynamic_aperture(self, save_label='0', figsize=(10, 6)):
+    def plot_dynamic_aperture(self, save_label="0", figsize=(10, 6)):
         """
         Plot the dynamic aperture calculation results.
-        
+
         Parameters:
             save_label (str): Label for saved figure filename.
             figsize (tuple): Figure size in inches.
         """
-        if not hasattr(self, 'dynamic_aperture_results'):
-            print("No dynamic aperture results available. Run compute_beam_aperture() first.")
+        if not hasattr(self, "dynamic_aperture_results"):
+            print(
+                "No dynamic aperture results available. Run compute_beam_aperture() first."
+            )
             return
-        
+
         results = self.dynamic_aperture_results
-        amplitudes = results['amplitudes']
-        survival_fraction = results['survival_fraction']
-        dynamic_aperture = results['dynamic_aperture']
-        
+        amplitudes = results["amplitudes"]
+        survival_fraction = results["survival_fraction"]
+        dynamic_aperture = results["dynamic_aperture"]
+
         plt.figure(figsize=figsize)
-        plt.semilogx(amplitudes, survival_fraction * 100, 'b-o', markersize=4)
-        plt.axhline(y=90, color='r', linestyle='--', label='90% survival threshold')
-        plt.axvline(x=dynamic_aperture, color='g', linestyle='--', 
-                   label=f'Dynamic aperture = {dynamic_aperture:.2e} m')
-        
-        plt.xlabel('Initial Amplitude (m)', fontsize=12)
-        plt.ylabel('Survival Fraction (%)', fontsize=12)
-        plt.title('Dynamic Aperture Analysis', fontsize=14)
+        plt.semilogx(amplitudes, survival_fraction * 100, "b-o", markersize=4)
+        plt.axhline(y=90, color="r", linestyle="--", label="90% survival threshold")
+        plt.axvline(
+            x=dynamic_aperture,
+            color="g",
+            linestyle="--",
+            label=f"Dynamic aperture = {dynamic_aperture:.2e} m",
+        )
+
+        plt.xlabel("Initial Amplitude (m)", fontsize=12)
+        plt.ylabel("Survival Fraction (%)", fontsize=12)
+        plt.title("Dynamic Aperture Analysis", fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.tight_layout()
-        
-        plt.savefig(f"{self.figs_save_dir}/dynamic_aperture_{save_label}.eps", 
-                   bbox_inches='tight', format='eps')
+
+        plt.savefig(
+            f"{self.figs_save_dir}/dynamic_aperture_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
-
-    def detect_beam_loss(self, state, aperture_threshold=0.05):
-        """
-        Detect if a particle has been lost (exceeded the physical aperture).
-        
-        Parameters:
-            state (np.ndarray): Particle state [x, xp, y, yp].
-            aperture_threshold (float): Physical aperture radius in meters.
-            
-        Returns:
-            bool: True if particle is lost, False otherwise.
-        """
-        # Check horizontal and vertical positions against aperture
-        if np.abs(state[0]) > aperture_threshold or np.abs(state[2]) > aperture_threshold:
-            return True
-        return False
-
-    def simulate_with_beam_loss(self, initial_states, aperture_threshold=0.05, 
-                                regenerate_lost_particles=True, max_regenerations=3,
-                                verbose=True):
-        """
-        Simulate particle motion with beam loss detection and optional regeneration.
-        
-        This method tracks particles and can regenerate lost particles with new 
-        initial conditions to maintain beam intensity.
-        
-        Parameters:
-            initial_states (np.ndarray): Initial particle states [N, 4] where N is number of particles.
-            aperture_threshold (float): Physical aperture radius in meters for loss detection.
-            regenerate_lost_particles (bool): If True, regenerate lost particles with new initial conditions.
-            max_regenerations (int): Maximum number of times to regenerate lost particles per particle.
-            verbose (bool): Whether to print progress information.
-            
-        Returns:
-            dict: Dictionary containing:
-                - 'final_states': Final particle states after simulation
-                - 'loss_statistics': Dictionary with loss information
-                - 'regeneration_history': List of regeneration events (if enabled)
-        """
-        if verbose:
-            print(f"\nRunning simulation with beam loss detection...")
-            print(f"  Aperture threshold: {aperture_threshold*1000:.1f} mm")
-            print(f"  Regeneration enabled: {regenerate_lost_particles}")
-        
-        n_particles = len(initial_states)
-        n_turns = self.n_turns
-        
-        # Initialize tracking arrays
-        current_states = initial_states.copy()
-        all_states = np.zeros((n_particles, n_turns, 4), dtype=np.float64)
-        
-        # Loss tracking
-        lost_particles = np.zeros(n_particles, dtype=bool)
-        first_loss_turn = np.full(n_particles, n_turns, dtype=int)
-        regeneration_count = np.zeros(n_particles, dtype=int)
-        regeneration_history = []
-        
-        # Track particles
-        for turn in range(n_turns):
-            for p_idx in range(n_particles):
-                if lost_particles[p_idx]:
-                    # Particle already lost, skip tracking
-                    continue
-                    
-                state = current_states[p_idx].copy()
-                
-                # Track through lattice
-                for cell_index in range(self.n_FODO):
-                    n_elems = self.len_per_cell_list[cell_index]
-                    for elem_in_cell in range(n_elems):
-                        global_elem_idx = sum(self.len_per_cell_list[:cell_index]) + elem_in_cell
-                        
-                        M_4x4 = self.M_lattice_4x4[global_elem_idx]
-                        D_4x1 = self.D_lattice_4x1[global_elem_idx]
-                        
-                        state = M_4x4 @ state + D_4x1
-                
-                # Check for beam loss
-                if self.detect_beam_loss(state, aperture_threshold):
-                    lost_particles[p_idx] = True
-                    first_loss_turn[p_idx] = turn
-                    
-                    if regenerate_lost_particles and regeneration_count[p_idx] < max_regenerations:
-                        # Regenerate particle with small random offset from original
-                        regeneration_count[p_idx] += 1
-                        new_state = initial_states[p_idx].copy()
-                        # Add small random perturbation
-                        new_state[0] += np.random.normal(0, 1e-5)
-                        new_state[2] += np.random.normal(0, 1e-5)
-                        current_states[p_idx] = new_state
-                        lost_particles[p_idx] = False  # Reset loss status
-                        regeneration_history.append({
-                            'particle': p_idx,
-                            'original_turn': turn,
-                            'regeneration_number': regeneration_count[p_idx]
-                        })
-                        if verbose:
-                            print(f"  Particle {p_idx} lost at turn {turn}, regenerated ( #{regeneration_count[p_idx]})")
-                else:
-                    current_states[p_idx] = state
-                
-                # Store state
-                all_states[p_idx, turn, :] = current_states[p_idx]
-        
-        # Calculate statistics
-        n_lost = np.sum(lost_particles)
-        loss_fraction = n_lost / n_particles
-        avg_turns_survived = np.mean(first_loss_turn[~lost_particles]) if np.any(~lost_particles) else 0
-        
-        loss_statistics = {
-            'n_particles': n_particles,
-            'n_lost': n_lost,
-            'loss_fraction': loss_fraction,
-            'first_loss_turn': first_loss_turn,
-            'lost_particles': lost_particles,
-            'regeneration_count': regeneration_count,
-            'total_regenerations': len(regeneration_history),
-            'avg_turns_survived': avg_turns_survived
-        }
-        
-        if verbose:
-            print(f"\nBeam loss simulation complete:")
-            print(f"  Particles lost: {n_lost}/{n_particles} ({loss_fraction*100:.1f}%)")
-            print(f"  Total regenerations: {len(regeneration_history)}")
-            print(f"  Average turns survived: {avg_turns_survived:.1f}")
-        
-        return {
-            'final_states': current_states,
-            'loss_statistics': loss_statistics,
-            'regeneration_history': regeneration_history,
-            'all_states': all_states
-        }
 
     def plot_ring(self, ax=None, plot_xlim=None, plot_ylim=None):
         """Plot the ring and elements with start of each FODO cell indicated and BPMs rotated perpendicular to the ring."""
@@ -2381,51 +2534,73 @@ class SynchrotronSimulator:
             fig, ax = plt.subplots(figsize=(10, 10))
 
         # Prepare the design trajectory for plotting
-        theta_design = np.linspace(0, 2 * np.pi, 1000)  # Negative for clockwise rotation
+        theta_design = np.linspace(
+            0, 2 * np.pi, 1000
+        )  # Negative for clockwise rotation
         x_design = self.design_radius * np.cos(theta_design)
         y_design = self.design_radius * np.sin(theta_design)
 
-        ax.plot(x_design, y_design, 'g--', ms=15, alpha=0.9, label='Design Trajectory')
+        ax.plot(x_design, y_design, "g--", ms=15, alpha=0.9, label="Design Trajectory")
 
         # Plot the elements on the design trajectory using cumulative_angle
         plotted_labels = set()
 
         for elem in self.lattice_elements_positions:
-            element_type = elem['element_type']
-            description = elem['description']
-            mid_theta = elem['cumulative_angle']  # Use cumulative_angle directly
+            element_type = elem["element_type"]
+            description = elem["description"]
+            mid_theta = elem["cumulative_angle"]  # Use cumulative_angle directly
 
             # Compute the position on the design trajectory
             x = self.design_radius * np.cos(mid_theta)
             y = self.design_radius * np.sin(mid_theta)
 
-            if element_type == 'Drift':
-                label = 'Drift' if 'Drift' not in plotted_labels else None
-                ax.scatter(x, y, color='green', marker='s', s=500, alpha=0.7, label=label)
-                plotted_labels.add('Drift')
-            elif element_type == 'Quad':
-                if 'Focusing' in description:
-                    label = 'Focusing Quad' if 'Focusing Quad' not in plotted_labels else None
-                    ax.scatter(x, y, color='orange', marker='^', s=500, alpha=0.7, label=label)
-                    plotted_labels.add('Focusing Quad')
+            if element_type == "Drift":
+                label = "Drift" if "Drift" not in plotted_labels else None
+                ax.scatter(
+                    x, y, color="green", marker="s", s=500, alpha=0.7, label=label
+                )
+                plotted_labels.add("Drift")
+            elif element_type == "Quad":
+                if "Focusing" in description:
+                    label = (
+                        "Focusing Quad"
+                        if "Focusing Quad" not in plotted_labels
+                        else None
+                    )
+                    ax.scatter(
+                        x, y, color="orange", marker="^", s=500, alpha=0.7, label=label
+                    )
+                    plotted_labels.add("Focusing Quad")
                 else:
-                    label = 'Defocusing Quad' if 'Defocusing Quad' not in plotted_labels else None
-                    ax.scatter(x, y, color='orange', marker='v', s=500, alpha=0.7, label=label)
-                    plotted_labels.add('Defocusing Quad')
-            elif element_type == 'Dipole':
-                label = 'Dipole' if 'Dipole' not in plotted_labels else None
-                ax.scatter(x, y, color='blue', marker='o', s=400, alpha=0.7, label=label)
-                plotted_labels.add('Dipole')
+                    label = (
+                        "Defocusing Quad"
+                        if "Defocusing Quad" not in plotted_labels
+                        else None
+                    )
+                    ax.scatter(
+                        x, y, color="orange", marker="v", s=500, alpha=0.7, label=label
+                    )
+                    plotted_labels.add("Defocusing Quad")
+            elif element_type == "Dipole":
+                label = "Dipole" if "Dipole" not in plotted_labels else None
+                ax.scatter(
+                    x, y, color="blue", marker="o", s=400, alpha=0.7, label=label
+                )
+                plotted_labels.add("Dipole")
             elif element_type == 'Dipole Kick in "Quad"':
-                label = 'Dipole Kick in Quad' if 'Dipole Kick in Quad' not in plotted_labels else None
-                ax.scatter(x, y, color='red', marker='X', s=400, alpha=0.7, label=label)
-                plotted_labels.add('Dipole Kick in Quad')
+                label = (
+                    "Dipole Kick in Quad"
+                    if "Dipole Kick in Quad" not in plotted_labels
+                    else None
+                )
+                ax.scatter(x, y, color="red", marker="X", s=400, alpha=0.7, label=label)
+                plotted_labels.add("Dipole Kick in Quad")
             else:
                 pass
 
         # Plot BPM positions rotated perpendicular to the ring (pointing towards the center)
         for bpm in self.bpm_positions:
-            bpm_angle = bpm['cumulative_angle']
+            bpm_angle = bpm["cumulative_angle"]
             x = self.design_radius * np.cos(bpm_angle)
             y = self.design_radius * np.sin(bpm_angle)
 
@@ -2444,14 +2619,21 @@ class SynchrotronSimulator:
             y_start = y
             y_end = y + dy
 
-            label = 'BPM' if 'BPM' not in plotted_labels else None
-            ax.plot([x_start, x_end], [y_start, y_end], color='purple', linewidth=5, alpha=0.5, label=label)
-            plotted_labels.add('BPM')
+            label = "BPM" if "BPM" not in plotted_labels else None
+            ax.plot(
+                [x_start, x_end],
+                [y_start, y_end],
+                color="purple",
+                linewidth=5,
+                alpha=0.5,
+                label=label,
+            )
+            plotted_labels.add("BPM")
 
         # Add text indicating the start of each FODO cell
         elements_per_cell = {}
         for elem in self.lattice_elements_positions:
-            cell_idx = elem['cell_index']
+            cell_idx = elem["cell_index"]
             if cell_idx not in elements_per_cell:
                 elements_per_cell[cell_idx] = []
             elements_per_cell[cell_idx].append(elem)
@@ -2459,41 +2641,51 @@ class SynchrotronSimulator:
         for cell_idx in elements_per_cell:
             cell_elements = elements_per_cell[cell_idx]
             start_elem = cell_elements[0]
-            start_angle = start_elem['cumulative_angle'] % (2 * np.pi)
+            start_angle = start_elem["cumulative_angle"] % (2 * np.pi)
 
             # Position for text slightly outside the ring
             text_radius = self.design_radius * 1.05  # Slightly outside the ring
             x_text = text_radius * np.cos(start_angle)
             y_text = text_radius * np.sin(start_angle)
 
-            ax.text(x_text, y_text, f'Start of Cell {cell_idx}', color='black', fontsize=8, ha='center', va='center', clip_on=True)
+            ax.text(
+                x_text,
+                y_text,
+                f"Start of Cell {cell_idx}",
+                color="black",
+                fontsize=8,
+                ha="center",
+                va="center",
+                clip_on=True,
+            )
 
         # Set labels, legend, etc.
-        ax.set_xlabel('x (meters)')
-        ax.set_ylabel('y (meters)')
-        ax.set_title('Synchrotron Ring with Elements')
+        ax.set_xlabel("x (meters)")
+        ax.set_ylabel("y (meters)")
+        ax.set_title("Synchrotron Ring with Elements")
         ax.legend()
-        ax.axis('equal')
+        ax.axis("equal")
         ax.grid(True)
-        
+
         if plot_xlim is not None:
             ax.set_xlim(plot_xlim)
             plt.xlim(plot_xlim)
-        
+
         if plot_ylim is not None:
             ax.set_ylim(plot_ylim)
             plt.ylim(plot_ylim)
-        
+
         print("ax.get_xlim: ", ax.get_xlim())
         print("ax.get_ylim: ", ax.get_ylim())
-        
+
         plt.tight_layout()
 
-
-    def plot_average_positions(self, cell_idx=0, window_size=5, start_idx=0, end_idx=None, save_label='0'):
+    def plot_average_positions(
+        self, cell_idx=0, window_size=5, start_idx=0, end_idx=None, save_label="0"
+    ):
         """
         Plot average positions vs revolution number with moving averages for a specific BPM.
-        
+
         Parameters:
             cell_idx (int): Index of the BPM (FODO cell) to plot.
             window_size (int): Window size for the moving average.
@@ -2507,7 +2699,9 @@ class SynchrotronSimulator:
 
         # Check window size
         if n_turns_to_plot < window_size:
-            print(f"Window size {window_size} is larger than the number of turns {n_turns_to_plot}.")
+            print(
+                f"Window size {window_size} is larger than the number of turns {n_turns_to_plot}."
+            )
             window_size = n_turns_to_plot
             if window_size == 0:
                 print("No data to plot.")
@@ -2518,8 +2712,8 @@ class SynchrotronSimulator:
         self.particles_avg_y_positions = []
 
         for idx in range(self.num_particles):
-            avg_x_positions = self.bpm_readings['x'][idx, start_idx:end_idx, cell_idx]
-            avg_y_positions = self.bpm_readings['y'][idx, start_idx:end_idx, cell_idx]
+            avg_x_positions = self.bpm_readings["x"][idx, start_idx:end_idx, cell_idx]
+            avg_y_positions = self.bpm_readings["y"][idx, start_idx:end_idx, cell_idx]
             self.particles_avg_x_positions.append(avg_x_positions)
             self.particles_avg_y_positions.append(avg_y_positions)
 
@@ -2531,24 +2725,47 @@ class SynchrotronSimulator:
         plt.figure()
         colors = get_colors(self.num_particles)
         rev_numbers = np.arange(start_idx, end_idx)
-        
+
         # Plot average x positions for each particle
         for idx in range(self.num_particles):
             avg_x_positions = self.particles_avg_x_positions[idx]
             if len(avg_x_positions) >= window_size:
-                moving_avg_x = np.convolve(avg_x_positions, np.ones(window_size)/window_size, mode='valid')
-                plt.plot(rev_numbers, avg_x_positions, color=colors[idx], label=f'Particle {idx+1}')
-                plt.plot(rev_numbers[window_size - 1:], moving_avg_x, linestyle='--', color=colors[idx],
-                        label=f'Moving Avg Particle {idx+1}')
+                moving_avg_x = np.convolve(
+                    avg_x_positions, np.ones(window_size) / window_size, mode="valid"
+                )
+                plt.plot(
+                    rev_numbers,
+                    avg_x_positions,
+                    color=colors[idx],
+                    label=f"Particle {idx + 1}",
+                )
+                plt.plot(
+                    rev_numbers[window_size - 1 :],
+                    moving_avg_x,
+                    linestyle="--",
+                    color=colors[idx],
+                    label=f"Moving Avg Particle {idx + 1}",
+                )
             else:
-                plt.plot(rev_numbers, avg_x_positions, color=colors[idx], label=f'Particle {idx+1}')
+                plt.plot(
+                    rev_numbers,
+                    avg_x_positions,
+                    color=colors[idx],
+                    label=f"Particle {idx + 1}",
+                )
 
-        plt.xlabel('Revolution Number')
-        plt.ylabel('Horizontal Position x (State)')
-        plt.title(f'Average Horizontal Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}')
+        plt.xlabel("Revolution Number")
+        plt.ylabel("Horizontal Position x (State)")
+        plt.title(
+            f"Average Horizontal Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}"
+        )
         plt.legend()
         plt.grid(True)
-        plt.savefig(f"{self.figs_save_dir}/plot_average_positions_X_{save_label}.eps", bbox_inches = 'tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_average_positions_X_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
         # Plot average y positions for each particle
@@ -2556,58 +2773,142 @@ class SynchrotronSimulator:
         for idx in range(self.num_particles):
             avg_y_positions = self.particles_avg_y_positions[idx]
             if len(avg_y_positions) >= window_size:
-                moving_avg_y = np.convolve(avg_y_positions, np.ones(window_size)/window_size, mode='valid')
-                plt.plot(rev_numbers, avg_y_positions, color=colors[idx], label=f'Particle {idx+1}')
-                plt.plot(rev_numbers[window_size - 1:], moving_avg_y, linestyle='--', color=colors[idx],
-                        label=f'Moving Avg Particle {idx+1}')
+                moving_avg_y = np.convolve(
+                    avg_y_positions, np.ones(window_size) / window_size, mode="valid"
+                )
+                plt.plot(
+                    rev_numbers,
+                    avg_y_positions,
+                    color=colors[idx],
+                    label=f"Particle {idx + 1}",
+                )
+                plt.plot(
+                    rev_numbers[window_size - 1 :],
+                    moving_avg_y,
+                    linestyle="--",
+                    color=colors[idx],
+                    label=f"Moving Avg Particle {idx + 1}",
+                )
             else:
-                plt.plot(rev_numbers, avg_y_positions, color=colors[idx], label=f'Particle {idx+1}')
+                plt.plot(
+                    rev_numbers,
+                    avg_y_positions,
+                    color=colors[idx],
+                    label=f"Particle {idx + 1}",
+                )
 
-        plt.xlabel('Revolution Number')
-        plt.ylabel('Vertical Position y (State)')
-        plt.title(f'Average Vertical Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}')
+        plt.xlabel("Revolution Number")
+        plt.ylabel("Vertical Position y (State)")
+        plt.title(
+            f"Average Vertical Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}"
+        )
         plt.legend()
         plt.grid(True)
-        plt.savefig(f"{self.figs_save_dir}/plot_average_positions_Y_{save_label}.eps", bbox_inches = 'tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_average_positions_Y_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
         # Plot overall average x positions
         plt.figure()
         if len(self.overall_avg_x_positions) >= window_size:
-            overall_moving_avg_x = np.convolve(self.overall_avg_x_positions, np.ones(window_size)/window_size, mode='valid')
-            plt.plot(rev_numbers, self.overall_avg_x_positions, label='Overall Avg x Position', color='k')
-            plt.plot(rev_numbers[window_size - 1:], overall_moving_avg_x, linestyle='--', color='b',
-                    label='Overall Moving Avg x')
+            overall_moving_avg_x = np.convolve(
+                self.overall_avg_x_positions,
+                np.ones(window_size) / window_size,
+                mode="valid",
+            )
+            plt.plot(
+                rev_numbers,
+                self.overall_avg_x_positions,
+                label="Overall Avg x Position",
+                color="k",
+            )
+            plt.plot(
+                rev_numbers[window_size - 1 :],
+                overall_moving_avg_x,
+                linestyle="--",
+                color="b",
+                label="Overall Moving Avg x",
+            )
         else:
-            plt.plot(rev_numbers, self.overall_avg_x_positions, label='Overall Avg x Position', color='k')
-        plt.xlabel('Revolution Number')
-        plt.ylabel('Horizontal Position x (State)')
-        plt.title(f'Overall Average Horizontal Position at BPM {cell_idx} from Turn {start_idx} to {end_idx}')
+            plt.plot(
+                rev_numbers,
+                self.overall_avg_x_positions,
+                label="Overall Avg x Position",
+                color="k",
+            )
+        plt.xlabel("Revolution Number")
+        plt.ylabel("Horizontal Position x (State)")
+        plt.title(
+            f"Overall Average Horizontal Position at BPM {cell_idx} from Turn {start_idx} to {end_idx}"
+        )
         plt.legend()
         plt.grid(True)
-        plt.savefig(f"{self.figs_save_dir}/plot_average_positions_X-overall_{save_label}.eps", bbox_inches = 'tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_average_positions_X-overall_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
         # Plot overall average y positions
         plt.figure()
         if len(self.overall_avg_y_positions) >= window_size:
-            overall_moving_avg_y = np.convolve(self.overall_avg_y_positions, np.ones(window_size)/window_size, mode='valid')
-            plt.plot(rev_numbers, self.overall_avg_y_positions, label='Overall Avg y Position', color='k')
-            plt.plot(rev_numbers[window_size - 1:], overall_moving_avg_y, linestyle='--', color='b',
-                    label='Overall Moving Avg y')
+            overall_moving_avg_y = np.convolve(
+                self.overall_avg_y_positions,
+                np.ones(window_size) / window_size,
+                mode="valid",
+            )
+            plt.plot(
+                rev_numbers,
+                self.overall_avg_y_positions,
+                label="Overall Avg y Position",
+                color="k",
+            )
+            plt.plot(
+                rev_numbers[window_size - 1 :],
+                overall_moving_avg_y,
+                linestyle="--",
+                color="b",
+                label="Overall Moving Avg y",
+            )
         else:
-            plt.plot(rev_numbers, self.overall_avg_y_positions, label='Overall Avg y Position', color='k')
-        plt.xlabel('Revolution Number')
-        plt.ylabel('Vertical Position y (State)')
-        plt.title(f'Overall Average Vertical Position at BPM {cell_idx} from Turn {start_idx} to {end_idx}')
+            plt.plot(
+                rev_numbers,
+                self.overall_avg_y_positions,
+                label="Overall Avg y Position",
+                color="k",
+            )
+        plt.xlabel("Revolution Number")
+        plt.ylabel("Vertical Position y (State)")
+        plt.title(
+            f"Overall Average Vertical Position at BPM {cell_idx} from Turn {start_idx} to {end_idx}"
+        )
         plt.legend()
         plt.grid(True)
-        plt.savefig(f"{self.figs_save_dir}/plot_average_positions_Y-overall_{save_label}.eps", bbox_inches = 'tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_average_positions_Y-overall_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
-    def plot_bpm_heatmaps(self, simulation_label='No Error', cell_idx=0, start_idx=0, end_idx=None, plot_xlim=None, plot_ylim=None, particle_idx=None, save_label='0', fontsize=14):
+    def plot_bpm_heatmaps(
+        self,
+        simulation_label="No Error",
+        cell_idx=0,
+        start_idx=0,
+        end_idx=None,
+        plot_xlim=None,
+        plot_ylim=None,
+        particle_idx=None,
+        save_label="0",
+        fontsize=14,
+    ):
         """Plot combined heatmap of BPM measurements for a specific FODO cell."""
-        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
+        if self.bpm_readings["x"] is None or self.bpm_readings["y"] is None:
             print("BPMs are not placed in the lattice.")
             return
 
@@ -2619,10 +2920,14 @@ class SynchrotronSimulator:
             end_particle = particle_idx + 1
         else:
             start_particle = 0
-            end_particle = self.bpm_readings['x'].shape[0]
+            end_particle = self.bpm_readings["x"].shape[0]
 
-        x_measurements = self.bpm_readings['x'][start_particle:end_particle, start_idx:end_idx, cell_idx].flatten()
-        y_measurements = self.bpm_readings['y'][start_particle:end_particle, start_idx:end_idx, cell_idx].flatten()
+        x_measurements = self.bpm_readings["x"][
+            start_particle:end_particle, start_idx:end_idx, cell_idx
+        ].flatten()
+        y_measurements = self.bpm_readings["y"][
+            start_particle:end_particle, start_idx:end_idx, cell_idx
+        ].flatten()
 
         # Compute Center of Mass
         com_x = np.mean(x_measurements)
@@ -2637,36 +2942,57 @@ class SynchrotronSimulator:
 
         # Create heatmap
         plt.figure(figsize=(8, 6))
-        sns.histplot(x=x_shifted, y=y_shifted, bins=100, cmap='plasma', cbar=True, stat='density', alpha=1)
-        plt.title(f'BPM Heatmap at Cell {cell_idx} Centered Around CoM ({simulation_label}) \n com_x={com_x} \n com_y={com_y}')
-        plt.xlabel('Horizontal Position x relative to CoM (meters)', fontsize=fontsize)
-        plt.ylabel('Vertical Position y relative to CoM (meters)', fontsize=fontsize)
-        plt.tick_params(axis='both', labelsize=fontsize)
+        sns.histplot(
+            x=x_shifted,
+            y=y_shifted,
+            bins=100,
+            cmap="plasma",
+            cbar=True,
+            stat="density",
+            alpha=1,
+        )
+        plt.title(
+            f"BPM Heatmap at Cell {cell_idx} Centered Around CoM ({simulation_label}) \n com_x={com_x} \n com_y={com_y}"
+        )
+        plt.xlabel("Horizontal Position x relative to CoM (meters)", fontsize=fontsize)
+        plt.ylabel("Vertical Position y relative to CoM (meters)", fontsize=fontsize)
+        plt.tick_params(axis="both", labelsize=fontsize)
         plt.minorticks_on()
         # plt.scatter(0, 0, color='black', label='Center of Mass') #marker='X', s=100
-        plt.gca().set_aspect('equal')
+        plt.gca().set_aspect("equal")
         plt.legend()
-        
+
         if plot_xlim is not None:
             plt.gca().set_xlim(plot_xlim)
             plt.xlim(plot_xlim)
-        
+
         if plot_ylim is not None:
             plt.gca().set_ylim(plot_ylim)
             plt.ylim(plot_ylim)
-            
-        plt.savefig(f"{self.figs_save_dir}/plot_bpm_heatmaps_{save_label}.eps", bbox_inches = 'tight', format='eps')
+
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_bpm_heatmaps_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
-    def plot_last_bpm_image(self, simulation_label='No Error', cell_idx=0, plot_xlim=None, plot_ylim=None, save_label='0'):
+    def plot_last_bpm_image(
+        self,
+        simulation_label="No Error",
+        cell_idx=0,
+        plot_xlim=None,
+        plot_ylim=None,
+        save_label="0",
+    ):
         """Plot heatmap of BPM measurements for the last turn at a specific FODO cell."""
-        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
+        if self.bpm_readings["x"] is None or self.bpm_readings["y"] is None:
             print("BPMs are not placed in the lattice.")
             return
 
         last_turn = self.n_turns - 1
-        x_last = self.bpm_readings['x'][:, last_turn, cell_idx]
-        y_last = self.bpm_readings['y'][:, last_turn, cell_idx]
+        x_last = self.bpm_readings["x"][:, last_turn, cell_idx]
+        y_last = self.bpm_readings["y"][:, last_turn, cell_idx]
 
         # Compute Center of Mass
         com_x = np.mean(x_last)
@@ -2678,34 +3004,62 @@ class SynchrotronSimulator:
 
         # Create heatmap
         plt.figure(figsize=(8, 6))
-        sns.histplot(x=x_shifted, y=y_shifted, bins=50, cmap='plasma', cbar=True, stat='density', alpha=1)
-        plt.title(f'BPM Heatmap at Cell {cell_idx} - Last Turn Centered Around CoM ({simulation_label})')
-        plt.xlabel('Horizontal Position x relative to CoM (meters)')
-        plt.ylabel('Vertical Position y relative to CoM (meters)')
-        plt.scatter(0, 0, color='white', marker='X', s=100, label='Center of Mass')
-        plt.gca().set_aspect('equal')
+        sns.histplot(
+            x=x_shifted,
+            y=y_shifted,
+            bins=50,
+            cmap="plasma",
+            cbar=True,
+            stat="density",
+            alpha=1,
+        )
+        plt.title(
+            f"BPM Heatmap at Cell {cell_idx} - Last Turn Centered Around CoM ({simulation_label})"
+        )
+        plt.xlabel("Horizontal Position x relative to CoM (meters)")
+        plt.ylabel("Vertical Position y relative to CoM (meters)")
+        plt.scatter(0, 0, color="white", marker="X", s=100, label="Center of Mass")
+        plt.gca().set_aspect("equal")
         plt.legend()
-        
+
         if plot_xlim is not None:
             plt.gca().set_xlim(plot_xlim)
             plt.xlim(plot_xlim)
-        
+
         if plot_ylim is not None:
             plt.gca().set_ylim(plot_ylim)
             plt.ylim(plot_ylim)
-            
-        plt.savefig(f"{self.figs_save_dir}/plot_last_bpm_image_{save_label}.eps", bbox_inches = 'tight', format='eps')
+
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_last_bpm_image_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
 
         plt.show()
 
-    def plot_bpm_comparison_last_images(self, simulator_no_error, simulator_with_error, cell_idx=0, particles='all', save_label='0', msg='With vs Without Quadrupole Error'):
+    def plot_bpm_comparison_last_images(
+        self,
+        simulator_no_error,
+        simulator_with_error,
+        cell_idx=0,
+        particles="all",
+        save_label="0",
+        msg="With vs Without Quadrupole Error",
+    ):
         """Compare the last BPM heatmaps between two simulations for a specific FODO cell.
         particles: 'all' | 'all_mean'
         """
-        if simulator_no_error.bpm_readings['x'] is None or simulator_no_error.bpm_readings['y'] is None:
+        if (
+            simulator_no_error.bpm_readings["x"] is None
+            or simulator_no_error.bpm_readings["y"] is None
+        ):
             print("BPMs are not placed in the lattice for the first simulator.")
             return
-        if simulator_with_error.bpm_readings['x'] is None or simulator_with_error.bpm_readings['y'] is None:
+        if (
+            simulator_with_error.bpm_readings["x"] is None
+            or simulator_with_error.bpm_readings["y"] is None
+        ):
             print("BPMs are not placed in the lattice for the second simulator.")
             return
 
@@ -2713,11 +3067,19 @@ class SynchrotronSimulator:
         last_turn_no_error = simulator_no_error.n_turns - 1
         last_turn_with_error = simulator_with_error.n_turns - 1
 
-        if particles == 'all':
-            x_no_error_all = simulator_no_error.bpm_readings['x'][:, 0:last_turn_no_error, cell_idx]
-            y_no_error_all = simulator_no_error.bpm_readings['y'][:, 0:last_turn_no_error, cell_idx]
-            x_with_error_all = simulator_with_error.bpm_readings['x'][:, 0:last_turn_with_error, cell_idx]
-            y_with_error_all = simulator_with_error.bpm_readings['y'][:, 0:last_turn_with_error, cell_idx]
+        if particles == "all":
+            x_no_error_all = simulator_no_error.bpm_readings["x"][
+                :, 0:last_turn_no_error, cell_idx
+            ]
+            y_no_error_all = simulator_no_error.bpm_readings["y"][
+                :, 0:last_turn_no_error, cell_idx
+            ]
+            x_with_error_all = simulator_with_error.bpm_readings["x"][
+                :, 0:last_turn_with_error, cell_idx
+            ]
+            y_with_error_all = simulator_with_error.bpm_readings["y"][
+                :, 0:last_turn_with_error, cell_idx
+            ]
 
             x_no_error_all = x_no_error_all.flatten()
             y_no_error_all = y_no_error_all.flatten()
@@ -2727,23 +3089,31 @@ class SynchrotronSimulator:
             x_no_error = x_no_error_all
             y_no_error = y_no_error_all
             x_with_error = x_with_error_all
-            y_with_error =  y_with_error_all       
+            y_with_error = y_with_error_all
 
-        elif particles == 'all_mean':
-            x_no_error_mean = simulator_no_error.bpm_readings['x'][:, 0:last_turn_no_error, cell_idx].mean(axis=0)
-            y_no_error_mean = simulator_no_error.bpm_readings['y'][:, 0:last_turn_no_error, cell_idx].mean(axis=0)
-            x_with_error_mean = simulator_with_error.bpm_readings['x'][:, 0:last_turn_with_error, cell_idx].mean(axis=0)
-            y_with_error_mean = simulator_with_error.bpm_readings['y'][:, 0:last_turn_with_error, cell_idx].mean(axis=0)
+        elif particles == "all_mean":
+            x_no_error_mean = simulator_no_error.bpm_readings["x"][
+                :, 0:last_turn_no_error, cell_idx
+            ].mean(axis=0)
+            y_no_error_mean = simulator_no_error.bpm_readings["y"][
+                :, 0:last_turn_no_error, cell_idx
+            ].mean(axis=0)
+            x_with_error_mean = simulator_with_error.bpm_readings["x"][
+                :, 0:last_turn_with_error, cell_idx
+            ].mean(axis=0)
+            y_with_error_mean = simulator_with_error.bpm_readings["y"][
+                :, 0:last_turn_with_error, cell_idx
+            ].mean(axis=0)
 
             x_no_error_mean = x_no_error_mean.flatten()
             y_no_error_mean = y_no_error_mean.flatten()
             x_with_error_mean = x_with_error_mean.flatten()
             y_with_error_mean = y_with_error_mean.flatten()
-            
+
             x_no_error = x_no_error_mean
             y_no_error = y_no_error_mean
             x_with_error = x_with_error_mean
-            y_with_error =  y_with_error_mean
+            y_with_error = y_with_error_mean
 
         # Compute Center of Mass for both simulations
         com_x_no_error = np.mean(x_no_error)
@@ -2758,22 +3128,28 @@ class SynchrotronSimulator:
         print("plot_bpm_comparison_last_images()/")
         print(f"\t CoM No error: X = {com_x_no_error}, Y = {com_y_no_error}")
         print(f"\t CoM With Error: X = {com_x_with_error}, Y = {com_y_with_error}")
-        print('----')
+        print("----")
         print(f"\t f'ΔX = {delta_x:.7f} m, {delta_x * 1e6:.2f} micron")
         print(f"\t f'ΔY = {delta_y:.7f} m, {delta_y * 1e6:.2f} micron")
-        print('----')
+        print("----")
 
         # **Retrieve Epsilon Measurements**
         # Ensure that both simulators have calculated beam sizes
-        if simulator_no_error.epsilon_horizontal is None or simulator_no_error.epsilon_vertical is None:
+        if (
+            simulator_no_error.epsilon_horizontal is None
+            or simulator_no_error.epsilon_vertical is None
+        ):
             simulator_no_error.calculate_beam_size()
-        if simulator_with_error.epsilon_horizontal is None or simulator_with_error.epsilon_vertical is None:
+        if (
+            simulator_with_error.epsilon_horizontal is None
+            or simulator_with_error.epsilon_vertical is None
+        ):
             simulator_with_error.calculate_beam_size()
 
         # Prepare the plot with a darker background
-        plt.figure(figsize=(12, 8), facecolor='black')
+        plt.figure(figsize=(12, 8), facecolor="black")
         ax = plt.gca()
-        ax.set_facecolor('black')  # Set axes background
+        ax.set_facecolor("black")  # Set axes background
 
         # Determine common bin ranges based on both datasets
         all_x = np.concatenate([x_no_error, x_with_error])
@@ -2799,84 +3175,110 @@ class SynchrotronSimulator:
             x=x_no_error,
             y=y_no_error,
             bins=[x_bins, y_bins],
-            cmap='Blues',
+            cmap="Blues",
             cbar=True,
-            stat='density',
+            stat="density",
             alpha=0.5,
-            label='No Error',
-            edgecolor=None
+            label="No Error",
+            edgecolor=None,
         )
 
         # Plot heatmap for with_error simulation
         sns.histplot(
             x=x_with_error,
             y=y_with_error,
-            bins=[x_bins,y_bins],
-            cmap='Reds',
+            bins=[x_bins, y_bins],
+            cmap="Reds",
             cbar=True,
-            stat='density',
+            stat="density",
             alpha=0.5,
-            label='With Quadrupole Error',
-            edgecolor=None
+            label="With Quadrupole Error",
+            edgecolor=None,
         )
 
         # Overlay the CoM points
-        plt.scatter(com_x_no_error, com_y_no_error, color='cyan', marker='o', s=100, label='CoM No Error')
-        plt.scatter(com_x_with_error, com_y_with_error, color='magenta', marker='X', s=100, label='CoM With Error')
+        plt.scatter(
+            com_x_no_error,
+            com_y_no_error,
+            color="cyan",
+            marker="o",
+            s=100,
+            label="CoM No Error",
+        )
+        plt.scatter(
+            com_x_with_error,
+            com_y_with_error,
+            color="magenta",
+            marker="X",
+            s=100,
+            label="CoM With Error",
+        )
 
         # Plot horizontal dashed line representing ΔX
         plt.plot(
-            [com_x_no_error, com_x_with_error], 
-            [com_y_no_error, com_y_no_error], 
-            color='yellow', 
-            linestyle='--', 
-            linewidth=2, 
-            label=f'ΔX = {delta_x * 1e6:.2f} micron'
+            [com_x_no_error, com_x_with_error],
+            [com_y_no_error, com_y_no_error],
+            color="yellow",
+            linestyle="--",
+            linewidth=2,
+            label=f"ΔX = {delta_x * 1e6:.2f} micron",
         )
 
         # Plot vertical dashed line representing ΔY
         plt.plot(
-            [com_x_with_error, com_x_with_error], 
-            [com_y_no_error, com_y_with_error], 
-            color='lime', 
-            linestyle='--', 
-            linewidth=2, 
-            label=f'ΔY = {delta_y * 1e6:.2f} micron'
+            [com_x_with_error, com_x_with_error],
+            [com_y_no_error, com_y_with_error],
+            color="lime",
+            linestyle="--",
+            linewidth=2,
+            label=f"ΔY = {delta_y * 1e6:.2f} micron",
         )
 
         # **Add Epsilon Measurements as Annotations**
         plt.text(
-            x_min + 0.05 * range_x, y_max - 0.1 * range_y, 
-            f"Epsilon Horizontal (No Error): {simulator_no_error.epsilon_horizontal:.6f} micron", 
-            color='cyan', fontsize=12
+            x_min + 0.05 * range_x,
+            y_max - 0.1 * range_y,
+            f"Epsilon Horizontal (No Error): {simulator_no_error.epsilon_horizontal:.6f} micron",
+            color="cyan",
+            fontsize=12,
         )
         plt.text(
-            x_min + 0.05 * range_x, y_max - 0.15 * range_y,
-            f"Epsilon Vertical (No Error): {simulator_no_error.epsilon_vertical:.6f} micron", 
-            color='cyan', fontsize=12
+            x_min + 0.05 * range_x,
+            y_max - 0.15 * range_y,
+            f"Epsilon Vertical (No Error): {simulator_no_error.epsilon_vertical:.6f} micron",
+            color="cyan",
+            fontsize=12,
         )
         plt.text(
-            x_min + 0.05 * range_x, y_max - 0.2 * range_y, 
-            f"Epsilon Horizontal (With Error): {simulator_with_error.epsilon_horizontal:.6f} micron", 
-            color='magenta', fontsize=12
+            x_min + 0.05 * range_x,
+            y_max - 0.2 * range_y,
+            f"Epsilon Horizontal (With Error): {simulator_with_error.epsilon_horizontal:.6f} micron",
+            color="magenta",
+            fontsize=12,
         )
         plt.text(
-            x_min + 0.05 * range_x, y_max - 0.25 * range_y, 
-            f"Epsilon Vertical (With Error): {simulator_with_error.epsilon_vertical:.6f} micron", 
-            color='magenta', fontsize=12
+            x_min + 0.05 * range_x,
+            y_max - 0.25 * range_y,
+            f"Epsilon Vertical (With Error): {simulator_with_error.epsilon_vertical:.6f} micron",
+            color="magenta",
+            fontsize=12,
         )
 
         # Customize plot aesthetics
-        plt.title(f'BPM Heatmap Comparison at Cell {cell_idx}: {msg}', color='white', fontsize=16)
-        plt.xlabel('Horizontal Position x (micron)', color='white', fontsize=14)
-        plt.ylabel('Vertical Position y (micron)', color='white', fontsize=14)
+        plt.title(
+            f"BPM Heatmap Comparison at Cell {cell_idx}: {msg}",
+            color="white",
+            fontsize=16,
+        )
+        plt.xlabel("Horizontal Position x (micron)", color="white", fontsize=14)
+        plt.ylabel("Vertical Position y (micron)", color="white", fontsize=14)
 
         # Set axis labels color to white for visibility on dark background
-        plt.xticks(color='white')
-        plt.yticks(color='white')
+        plt.xticks(color="white")
+        plt.yticks(color="white")
 
         # Add legend with white text
-        legend = plt.legend(facecolor='gray', edgecolor='white', framealpha=0.7)
+        legend = plt.legend(facecolor="gray", edgecolor="white", framealpha=0.7)
         for text in legend.get_texts():
             text.set_color("white")
 
@@ -2885,17 +3287,30 @@ class SynchrotronSimulator:
         plt.ylim(y_min, y_max)
 
         # Set aspect ratio to equal to ensure square bins
-        plt.axis('equal')
+        plt.axis("equal")
 
-        plt.grid(True, color='gray', alpha=0.5)
+        plt.grid(True, color="gray", alpha=0.5)
         plt.tight_layout()
 
-        plt.savefig(f"{self.figs_save_dir}/plot_bpm_comparison_last_images_{particles}_{save_label}.eps", bbox_inches = 'tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_bpm_comparison_last_images_{particles}_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
-    def plot_all_bpm_heatmap(self, simulation_label='No Error', start_idx=0, end_idx=None, plot_xlim=None, plot_ylim=None, bins=100, save_label='0'):
+    def plot_all_bpm_heatmap(
+        self,
+        simulation_label="No Error",
+        start_idx=0,
+        end_idx=None,
+        plot_xlim=None,
+        plot_ylim=None,
+        bins=100,
+        save_label="0",
+    ):
         """Plot combined heatmap of BPM measurements from all BPMs."""
-        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
+        if self.bpm_readings["x"] is None or self.bpm_readings["y"] is None:
             print("BPMs are not placed in the lattice.")
             return
 
@@ -2903,8 +3318,8 @@ class SynchrotronSimulator:
         end_idx = end_idx if end_idx is not None else total_turns
 
         # Collect all x and y measurements from all BPMs
-        x_measurements = self.bpm_readings['x'][:, start_idx:end_idx, :].flatten()
-        y_measurements = self.bpm_readings['y'][:, start_idx:end_idx, :].flatten()
+        x_measurements = self.bpm_readings["x"][:, start_idx:end_idx, :].flatten()
+        y_measurements = self.bpm_readings["y"][:, start_idx:end_idx, :].flatten()
 
         # Compute Center of Mass
         com_x = np.mean(x_measurements)
@@ -2913,43 +3328,57 @@ class SynchrotronSimulator:
         # # Shift measurements to center around CoM
         # x_shifted = x_measurements - com_x
         # y_shifted = y_measurements - com_y
-        
+
         x_shifted = x_measurements
         y_shifted = y_measurements
 
         # Create heatmap
         plt.figure(figsize=(8, 6))
-        sns.histplot(x=x_shifted, y=y_shifted, bins=100, cmap='plasma', cbar=True, stat='density', alpha=1)
-        plt.title(f'Combined BPM Heatmap from All BPMs ({simulation_label})\ncom_x={com_x}, com_y={com_y}')
-        plt.xlabel('Horizontal Position x relative to CoM (meters)')
-        plt.ylabel('Vertical Position y relative to CoM (meters)')
-        plt.gca().set_aspect('equal')
+        sns.histplot(
+            x=x_shifted,
+            y=y_shifted,
+            bins=100,
+            cmap="plasma",
+            cbar=True,
+            stat="density",
+            alpha=1,
+        )
+        plt.title(
+            f"Combined BPM Heatmap from All BPMs ({simulation_label})\ncom_x={com_x}, com_y={com_y}"
+        )
+        plt.xlabel("Horizontal Position x relative to CoM (meters)")
+        plt.ylabel("Vertical Position y relative to CoM (meters)")
+        plt.gca().set_aspect("equal")
         plt.legend()
-        
+
         if plot_xlim is not None:
             plt.gca().set_xlim(plot_xlim)
             plt.xlim(plot_xlim)
-        
+
         if plot_ylim is not None:
             plt.gca().set_ylim(plot_ylim)
             plt.ylim(plot_ylim)
 
-        plt.savefig(f"{self.figs_save_dir}/plot_all_bpm_heatmap_{save_label}.eps", bbox_inches = 'tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_all_bpm_heatmap_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
 
         plt.show()
 
     def plot_phase_space_diagram(
         self,
-        first_axis='x',
-        second_axis='y',
+        first_axis="x",
+        second_axis="y",
         cell_idx=0,
         start_idx=0,
         end_idx=None,
         particle_idx=None,
-        save_label='0',
+        save_label="0",
         fontsize=14,
         plot_all=False,
-        bins=150
+        bins=150,
     ):
         """
         Plot the phase space heatmap (first_axis vs. second_axis) at one BPM (cell_idx),
@@ -2961,14 +3390,14 @@ class SynchrotronSimulator:
             cell_idx (int):    Index of the BPM (FODO cell) to plot if plot_all=False.
             start_idx (int):   Starting revolution index (inclusive). Default=0.
             end_idx (int):     Ending revolution index (exclusive). If None, uses last turn.
-            particle_idx (int or None): Which particle to plot. If None, flattens all. 
+            particle_idx (int or None): Which particle to plot. If None, flattens all.
             save_label (str):  Label appended to the saved figure filename. Default='0'.
             fontsize (int):    Font size for plot labels and titles. Default=14.
-            plot_all (bool):   If True, plot all BPMs in one figure (subplots). 
+            plot_all (bool):   If True, plot all BPMs in one figure (subplots).
                             If False, plot only the single cell_idx. Default=False.
         """
         # Check if BPM readings are available
-        if (self.bpm_readings['x'] is None) or (self.bpm_readings['xp'] is None):
+        if (self.bpm_readings["x"] is None) or (self.bpm_readings["xp"] is None):
             print("BPM readings are not available.")
             return
 
@@ -2976,7 +3405,7 @@ class SynchrotronSimulator:
         end_idx = end_idx if (end_idx is not None) else total_turns
 
         # Number of BPMs
-        n_BPMs = self.bpm_readings['x'].shape[2]
+        n_BPMs = self.bpm_readings["x"].shape[2]
 
         # --------------------------------------------------
         #  Case 1) plot_all = False => Single BPM as before
@@ -2984,29 +3413,32 @@ class SynchrotronSimulator:
         if not plot_all:
             # Extract data for the specified axes, BPM, turn range
             if particle_idx is None:
-                first_axis_data = self.bpm_readings[first_axis][:, start_idx:end_idx, cell_idx].flatten()
-                second_axis_data = self.bpm_readings[second_axis][:, start_idx:end_idx, cell_idx].flatten()
+                first_axis_data = self.bpm_readings[first_axis][
+                    :, start_idx:end_idx, cell_idx
+                ].flatten()
+                second_axis_data = self.bpm_readings[second_axis][
+                    :, start_idx:end_idx, cell_idx
+                ].flatten()
             else:
-                first_axis_data = self.bpm_readings[first_axis][particle_idx, start_idx:end_idx, cell_idx]
-                second_axis_data = self.bpm_readings[second_axis][particle_idx, start_idx:end_idx, cell_idx]
+                first_axis_data = self.bpm_readings[first_axis][
+                    particle_idx, start_idx:end_idx, cell_idx
+                ]
+                second_axis_data = self.bpm_readings[second_axis][
+                    particle_idx, start_idx:end_idx, cell_idx
+                ]
 
             # Create the heatmap
             plt.figure(figsize=(8, 6))
-            
-            
+
             hist, xedges, yedges, im = plt.hist2d(
-                first_axis_data, 
-                second_axis_data, 
-                bins=bins, 
-                cmap='jet', 
-                density=True)
+                first_axis_data, second_axis_data, bins=bins, cmap="jet", density=True
+            )
             plt.grid(True, linestyle="--", alpha=0.3)
-        
+
             # Colorbar for intensity reference
             cbar = plt.colorbar(im)
             cbar.set_label("Density of Particles", fontsize=12)
 
-            
             # sns.histplot(
             #     x=first_axis_data,
             #     y=second_axis_data,
@@ -3015,20 +3447,19 @@ class SynchrotronSimulator:
             #     stat="density"
             # )
 
-            
-            plt.xlabel(f'{first_axis} (meters)', fontsize=fontsize)
-            plt.ylabel(f'{second_axis} (radians)', fontsize=fontsize)
+            plt.xlabel(f"{first_axis} (meters)", fontsize=fontsize)
+            plt.ylabel(f"{second_axis} (radians)", fontsize=fontsize)
             plt.title(
-                f'Phase Space Heatmap ({first_axis} vs. {second_axis}) at BPM {cell_idx}',
-                fontsize=fontsize
+                f"Phase Space Heatmap ({first_axis} vs. {second_axis}) at BPM {cell_idx}",
+                fontsize=fontsize,
             )
-            plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+            plt.grid(True, which="both", linestyle="--", linewidth=0.5)
 
             # Save the figure
             plt.savefig(
                 f"{self.figs_save_dir}/plot_phase_space_heatmap_{first_axis}-Vs-{second_axis}_{save_label}.eps",
-                bbox_inches='tight',
-                format='eps'
+                bbox_inches="tight",
+                format="eps",
             )
             plt.show()
 
@@ -3041,9 +3472,11 @@ class SynchrotronSimulator:
             n_rows = int(np.ceil(n_BPMs / n_cols))
 
             fig, axes = plt.subplots(
-                n_rows, n_cols,
+                n_rows,
+                n_cols,
                 figsize=(5 * n_cols, 4 * n_rows),
-                sharex=False, sharey=False
+                sharex=False,
+                sharey=False,
             )
             axes = axes.flatten()  # Flatten for easy indexing
 
@@ -3053,11 +3486,19 @@ class SynchrotronSimulator:
 
                 # Collect data for each BPM in the same manner
                 if particle_idx is None:
-                    first_axis_data = self.bpm_readings[first_axis][:, start_idx:end_idx, bpm_idx].flatten()
-                    second_axis_data = self.bpm_readings[second_axis][:, start_idx:end_idx, bpm_idx].flatten()
+                    first_axis_data = self.bpm_readings[first_axis][
+                        :, start_idx:end_idx, bpm_idx
+                    ].flatten()
+                    second_axis_data = self.bpm_readings[second_axis][
+                        :, start_idx:end_idx, bpm_idx
+                    ].flatten()
                 else:
-                    first_axis_data = self.bpm_readings[first_axis][particle_idx, start_idx:end_idx, bpm_idx]
-                    second_axis_data = self.bpm_readings[second_axis][particle_idx, start_idx:end_idx, bpm_idx]
+                    first_axis_data = self.bpm_readings[first_axis][
+                        particle_idx, start_idx:end_idx, bpm_idx
+                    ]
+                    second_axis_data = self.bpm_readings[second_axis][
+                        particle_idx, start_idx:end_idx, bpm_idx
+                    ]
 
                 # # Plot histogram in each subplot
                 # sns.histplot(
@@ -3069,21 +3510,22 @@ class SynchrotronSimulator:
                 #     ax=ax
                 # )
                 hist, xedges, yedges, im = ax.hist2d(
-                    first_axis_data, 
-                    second_axis_data, 
-                    bins=bins, 
-                    cmap='jet', 
-                    density=True)
+                    first_axis_data,
+                    second_axis_data,
+                    bins=bins,
+                    cmap="jet",
+                    density=True,
+                )
                 ax.grid(True, linestyle="--", alpha=0.3)
-                            
-                ax.set_xlabel(f'{first_axis} (m)', fontsize=fontsize-2)
-                ax.set_ylabel(f'{second_axis}', fontsize=fontsize-2)
-                ax.set_title(f'BPM {bpm_idx}', fontsize=fontsize-2)
-                ax.tick_params(axis='both', labelsize=fontsize-2)
-                ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+                ax.set_xlabel(f"{first_axis} (m)", fontsize=fontsize - 2)
+                ax.set_ylabel(f"{second_axis}", fontsize=fontsize - 2)
+                ax.set_title(f"BPM {bpm_idx}", fontsize=fontsize - 2)
+                ax.tick_params(axis="both", labelsize=fontsize - 2)
+                ax.grid(True, which="both", linestyle="--", linewidth=0.5)
 
             # Colorbar for intensity reference
-            cbar_ax = fig.add_axes([1, 0.1, .03, .7])
+            cbar_ax = fig.add_axes([1, 0.1, 0.03, 0.7])
             cbar = plt.colorbar(im, cax=cbar_ax)
             cbar.set_label("Density of Particles", fontsize=12)
 
@@ -3093,18 +3535,20 @@ class SynchrotronSimulator:
 
             # Give an overall title and save
             fig.suptitle(
-                f'Phase Space Heatmaps ({first_axis} vs. {second_axis}) at All BPMs\nTurns {start_idx}–{end_idx}',
-                fontsize=fontsize
+                f"Phase Space Heatmaps ({first_axis} vs. {second_axis}) at All BPMs\nTurns {start_idx}–{end_idx}",
+                fontsize=fontsize,
             )
             fig.tight_layout(rect=[0, 0.03, 1, 0.95])
             plt.savefig(
                 f"{self.figs_save_dir}/plot_phase_space_heatmap_ALL_{first_axis}-Vs-{second_axis}_{save_label}.eps",
-                bbox_inches='tight',
-                format='eps'
+                bbox_inches="tight",
+                format="eps",
             )
             plt.show()
 
-    def plot_particle_bpm_readings(self, particle_idx=0, start_idx=0, end_idx=None, save_label='0'):
+    def plot_particle_bpm_readings(
+        self, particle_idx=0, start_idx=0, end_idx=None, save_label="0"
+    ):
         """
         Plot BPM readings (x and y) for a specific particle over all BPMs and revolutions,
         with x-axis ticks based on betatron tune Qx, Qy.
@@ -3118,7 +3562,7 @@ class SynchrotronSimulator:
             end_idx (int):      Ending revolution index (exclusive). If None, plots until the last turn.
             save_label (str):   Label for the saved figure name.
         """
-        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
+        if self.bpm_readings["x"] is None or self.bpm_readings["y"] is None:
             print("BPM readings are not available.")
             return
 
@@ -3126,10 +3570,10 @@ class SynchrotronSimulator:
         end_idx = end_idx if end_idx is not None else total_turns
 
         # Extract the data for the chosen particle and turn range
-        x_data = self.bpm_readings['x'][particle_idx, start_idx:end_idx, :]
-        y_data = self.bpm_readings['y'][particle_idx, start_idx:end_idx, :]
+        x_data = self.bpm_readings["x"][particle_idx, start_idx:end_idx, :]
+        y_data = self.bpm_readings["y"][particle_idx, start_idx:end_idx, :]
 
-        # x_data, y_data each has shape (revs, bpms), 
+        # x_data, y_data each has shape (revs, bpms),
         # where revs = number of turns in [start_idx, end_idx]
         # and bpms = self.n_FODO (if there's one BPM per cell).
         revs, bpms = x_data.shape
@@ -3143,39 +3587,44 @@ class SynchrotronSimulator:
         # Plot X data, with x-axis ticks based on the horizontal tune Qx
         # ------------------------------------------------------------
         plt.figure(figsize=(20, 0.6))
-        plt.plot(x_data, '-')
-        plt.ylabel('X [m]')
-        plt.xlabel('Betatron Oscillations in X (integer ticks)')
+        plt.plot(x_data, "-")
+        plt.ylabel("X [m]")
+        plt.xlabel("Betatron Oscillations in X (integer ticks)")
 
         # Generate ticks for each integer number of X betatron cycles:
         # 1 X cycle = 1/Qx ring turns, so after n cycles => n/Qx turns.
         # In the flattened array: index_in_flat = (n/Qx) * bpms
-        n_max_x_cycles = int(np.floor(self.Qx * revs))  # how many full X cycles within 'revs' ring turns
+        n_max_x_cycles = int(
+            np.floor(self.Qx * revs)
+        )  # how many full X cycles within 'revs' ring turns
         x_tick_positions = []
         x_tick_labels = []
         for n in range(n_max_x_cycles + 1):
             # ring_turn is the actual ring turn number. We place a tick at that.
-            ring_turn = n / self.Qx  
+            ring_turn = n / self.Qx
             if ring_turn <= revs:
                 idx_in_flat = ring_turn * bpms
                 x_tick_positions.append(idx_in_flat)
                 x_tick_labels.append(str(n))  # label with integer cycle count
 
         plt.xticks(x_tick_positions, x_tick_labels)
-        plt.title(f'X - BPM data flattened\nTurns={revs}, Qx={self.Qx:.5f}')
+        plt.title(f"X - BPM data flattened\nTurns={revs}, Qx={self.Qx:.5f}")
         plt.grid(True)
 
-        plt.savefig(f"{self.figs_save_dir}/plot_particle_bpm_readings_X_{save_label}.eps",
-                    bbox_inches='tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_particle_bpm_readings_X_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
 
         # ------------------------------------------------------------
         # Plot Y data, with x-axis ticks based on the vertical tune Qy
         # ------------------------------------------------------------
         plt.figure(figsize=(20, 0.6))
-        plt.plot(y_data, '-')
-        plt.ylabel('Y [m]')
-        plt.xlabel('Betatron Oscillations in Y (integer ticks)')
+        plt.plot(y_data, "-")
+        plt.ylabel("Y [m]")
+        plt.xlabel("Betatron Oscillations in Y (integer ticks)")
 
         n_max_y_cycles = int(np.floor(self.Qy * revs))
         y_tick_positions = []
@@ -3188,24 +3637,26 @@ class SynchrotronSimulator:
                 y_tick_labels.append(str(n))
 
         plt.xticks(y_tick_positions, y_tick_labels)
-        plt.title(f'Y - BPM data flattened\nTurns={revs}, Qy={self.Qy:.5f}')
+        plt.title(f"Y - BPM data flattened\nTurns={revs}, Qy={self.Qy:.5f}")
         plt.grid(True)
 
-        plt.savefig(f"{self.figs_save_dir}/plot_particle_bpm_readings_Y_{save_label}.eps",
-                    bbox_inches='tight', format='eps')
+        plt.savefig(
+            f"{self.figs_save_dir}/plot_particle_bpm_readings_Y_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
         plt.show()
-
 
     def compare_bpm_signal_vs_bpm_number(
         self,
         other_simulator,
-        turn='last',
-        plane='horizontal',
+        turn="last",
+        plane="horizontal",
         average_over_particles=True,
         plot_difference=True,
         figsize=(8, 5),
-        save_label='0',
-        fontsize=9
+        save_label="0",
+        fontsize=9,
     ):
         """
         Compare BPM signals (x or y) vs. BPM index for two simulations:
@@ -3218,7 +3669,7 @@ class SynchrotronSimulator:
         Parameters
         ----------
         other_simulator : SynchrotronSimulator
-            Another SynchrotronSimulator instance to compare against. 
+            Another SynchrotronSimulator instance to compare against.
             Typically, you pass a simulator that includes quadrupole/dipole errors.
         turn : int or 'last'
             Which turn index to compare. If 'last', uses the final turn.
@@ -3238,30 +3689,36 @@ class SynchrotronSimulator:
         """
 
         # ---- 1) Retrieve BPM data from both simulators -----------
-        if plane.lower() == 'horizontal':
-            data_self  = self.bpm_readings['x']   # shape (num_particles, n_turns, n_BPMs)
-            data_other = other_simulator.bpm_readings['x']
+        if plane.lower() == "horizontal":
+            data_self = self.bpm_readings["x"]  # shape (num_particles, n_turns, n_BPMs)
+            data_other = other_simulator.bpm_readings["x"]
             y_label = "Horizontal Displacement x (m)"
-        elif plane.lower() == 'vertical':
-            data_self  = self.bpm_readings['y']
-            data_other = other_simulator.bpm_readings['y']
+        elif plane.lower() == "vertical":
+            data_self = self.bpm_readings["y"]
+            data_other = other_simulator.bpm_readings["y"]
             y_label = "Vertical Displacement y (m)"
         else:
             raise ValueError("plane must be 'horizontal' or 'vertical'")
 
         # ---- 2) Determine turn index to plot ---------------------
-        if turn == 'last':
+        if turn == "last":
             turn_idx = min(self.n_turns, other_simulator.n_turns) - 1
         else:
             turn_idx = int(turn)
 
         # Safety check
-        if turn_idx < 0 or turn_idx >= self.n_turns or turn_idx >= other_simulator.n_turns:
-            raise ValueError(f"Requested turn {turn_idx} is out of range for at least one simulator.")
+        if (
+            turn_idx < 0
+            or turn_idx >= self.n_turns
+            or turn_idx >= other_simulator.n_turns
+        ):
+            raise ValueError(
+                f"Requested turn {turn_idx} is out of range for at least one simulator."
+            )
 
         # ---- 3) Extract data for the chosen turn ------------------
         # shape => (num_particles, n_BPMs)
-        turn_data_self  = data_self[:,  turn_idx, :]
+        turn_data_self = data_self[:, turn_idx, :]
         turn_data_other = data_other[:, turn_idx, :]
 
         # ---- 4) Create figure & axes -----------------------------
@@ -3270,66 +3727,101 @@ class SynchrotronSimulator:
         # BPM indices => 0..(n_FODO - 1)
         # We assume both sims have the same number of BPMs (same n_FODO)
         if self.n_FODO != other_simulator.n_FODO:
-            print("[Warning] The two simulators have different n_FODO values. "
-                "Their BPM signals may not match up one-to-one.")
+            print(
+                "[Warning] The two simulators have different n_FODO values. "
+                "Their BPM signals may not match up one-to-one."
+            )
         bpm_indices = np.arange(self.n_FODO)
 
         # ---- 5) Plot signals --------------------------------------
         if average_over_particles:
             # Mean orbit across all particles
-            mean_self  = np.mean(turn_data_self,  axis=0)  # shape => (n_BPMs,)
+            mean_self = np.mean(turn_data_self, axis=0)  # shape => (n_BPMs,)
             mean_other = np.mean(turn_data_other, axis=0)
 
-            ax.plot(bpm_indices, mean_self,  marker='o', linestyle='-',  color='blue', label='No Error (self)')
-            ax.plot(bpm_indices, mean_other, marker='s', linestyle='--', color='red',  label='With Error (other)')
+            ax.plot(
+                bpm_indices,
+                mean_self,
+                marker="o",
+                linestyle="-",
+                color="blue",
+                label="No Error (self)",
+            )
+            ax.plot(
+                bpm_indices,
+                mean_other,
+                marker="s",
+                linestyle="--",
+                color="red",
+                label="With Error (other)",
+            )
 
             ax.set_title(
                 f"{plane.capitalize()} BPM Signals vs BPM Index\n"
                 f"(Turn={turn_idx}, Avg over {self.num_particles} particles)",
-                fontsize=fontsize
+                fontsize=fontsize,
             )
         else:
             # Plot each particle curve
-            n_p_self  = turn_data_self.shape[0]
+            n_p_self = turn_data_self.shape[0]
             n_p_other = turn_data_other.shape[0]
 
             for pid in range(n_p_self):
-                ax.plot(bpm_indices, turn_data_self[pid, :],
-                        marker='o', linestyle='-', alpha=0.2, color='blue')
+                ax.plot(
+                    bpm_indices,
+                    turn_data_self[pid, :],
+                    marker="o",
+                    linestyle="-",
+                    alpha=0.2,
+                    color="blue",
+                )
             for pid in range(n_p_other):
-                ax.plot(bpm_indices, turn_data_other[pid, :],
-                        marker='s', linestyle='--', alpha=0.2, color='red')
+                ax.plot(
+                    bpm_indices,
+                    turn_data_other[pid, :],
+                    marker="s",
+                    linestyle="--",
+                    alpha=0.2,
+                    color="red",
+                )
 
             ax.set_title(
                 f"{plane.capitalize()} BPM Signals vs BPM Index\n"
                 f"(Turn={turn_idx}, All Particles)",
-                fontsize=fontsize
+                fontsize=fontsize,
             )
 
         ax.set_xlabel("BPM Index (0 … n_FODO-1)", fontsize=fontsize)
         ax.set_ylabel(y_label, fontsize=fontsize)
         ax.grid(True)
-        ax.tick_params(axis='both', labelsize=fontsize)
+        ax.tick_params(axis="both", labelsize=fontsize)
         ax.legend()
 
         # ---- 6) Optional: Plot difference (with_error - no_error) --
         if plot_difference and average_over_particles:
             difference = mean_other - mean_self
-            ax_inset = ax.inset_axes([0.58, 0.08, 0.38, 0.32])  # [x0, y0, width, height]
-            ax_inset.plot(bpm_indices, difference, marker='d', color='green')
-            ax_inset.set_title("Difference (Error - No Error)", fontsize=int(fontsize/2))
-            ax_inset.set_xlabel("BPM Index", fontsize=int(fontsize/1.5))
-            ax_inset.set_ylabel("Δ Orbit (m)", fontsize=int(fontsize/1.5))
-            ax_inset.tick_params(axis='both', labelsize=int(fontsize/1.5))
+            ax_inset = ax.inset_axes(
+                [0.58, 0.08, 0.38, 0.32]
+            )  # [x0, y0, width, height]
+            ax_inset.plot(bpm_indices, difference, marker="d", color="green")
+            ax_inset.set_title(
+                "Difference (Error - No Error)", fontsize=int(fontsize / 2)
+            )
+            ax_inset.set_xlabel("BPM Index", fontsize=int(fontsize / 1.5))
+            ax_inset.set_ylabel("Δ Orbit (m)", fontsize=int(fontsize / 1.5))
+            ax_inset.tick_params(axis="both", labelsize=int(fontsize / 1.5))
             ax_inset.grid(True)
 
         plt.tight_layout()
 
-        plt.savefig(f"{self.figs_save_dir}/compare_bpm_signal_vs_bpm_number_{save_label}.eps", bbox_inches = 'tight', format='eps')
-        
+        plt.savefig(
+            f"{self.figs_save_dir}/compare_bpm_signal_vs_bpm_number_{save_label}.eps",
+            bbox_inches="tight",
+            format="eps",
+        )
+
         plt.show()
         return fig, ax
-
 
     def plot_initial_positions_heatmap(self, bins=200):
         """
@@ -3340,12 +3832,14 @@ class SynchrotronSimulator:
         - bins (int): Number of bins for the 2D histogram.
         """
         # Extract initial positions
-        x_init = self.bpm_readings['x'][:,  0, 0]
-        y_init = self.bpm_readings['y'][:,  0, 0]
-        
+        x_init = self.bpm_readings["x"][:, 0, 0]
+        y_init = self.bpm_readings["y"][:, 0, 0]
+
         # Create the 2D histogram
         plt.figure(figsize=(8, 8))
-        hist, xedges, yedges, im = plt.hist2d(x_init, y_init, bins=bins, cmap='jet', density=True)
+        hist, xedges, yedges, im = plt.hist2d(
+            x_init, y_init, bins=bins, cmap="jet", density=True
+        )
 
         # Colorbar for intensity reference
         cbar = plt.colorbar(im)
@@ -3358,127 +3852,190 @@ class SynchrotronSimulator:
         plt.grid(True, linestyle="--", alpha=0.3)
 
         plt.tight_layout()
-        
+
         # Save as EPS format
-        plt.savefig("initial_positions_heatmap.eps", format='eps', bbox_inches='tight')
+        plt.savefig("initial_positions_heatmap.eps", format="eps", bbox_inches="tight")
 
         # Show the plot
         plt.show()
 
-    def plot_betatron_oscillations_TURN_FLATTEN(self, start_turn=0, end_turn=None, 
-                                    n_particles=50, figsize=(20, 12), save_label=''):
+    def plot_betatron_oscillations_TURN_FLATTEN(
+        self,
+        start_turn=0,
+        end_turn=None,
+        n_particles=50,
+        figsize=(20, 12),
+        save_label="",
+    ):
         """
         Plot betatron oscillations with cyclic time-series visualization across BPMs and turns
 
         """
         # Handle turn range
-        if end_turn is None: 
+        if end_turn is None:
             end_turn = self.n_turns - 1
         start_turn = max(0, start_turn)
         end_turn = min(end_turn, self.n_turns - 1)
         turns = np.arange(start_turn, end_turn + 1)
-        n_bpms = self.bpm_readings['x'].shape[2]
+        n_bpms = self.bpm_readings["x"].shape[2]
 
         # Get data and flatten across turns
         def get_flattened_data(simulator, data_key):
-            data = getattr(simulator.bpm_readings[data_key], 'copy')()
-            selected = data[:, start_turn:end_turn+1, :]  # (particles, turns, bpms)
+            data = getattr(simulator.bpm_readings[data_key], "copy")()
+            selected = data[:, start_turn : end_turn + 1, :]  # (particles, turns, bpms)
             return selected.reshape(selected.shape[0], -1)  # Flatten turns and bpms
 
-        x_self = get_flattened_data(self, 'x')
-        y_self = get_flattened_data(self, 'y')
+        x_self = get_flattened_data(self, "x")
+        y_self = get_flattened_data(self, "y")
 
         # Create cyclic time axis
         time_points = np.arange(x_self.shape[1])
         n_total_points = len(time_points)
-        
+
         # Calculate full oscillation periods
-        turns_per_osc_x = int(round(1/self.Qx))
-        turns_per_osc_y = int(round(1/self.Qy))
+        turns_per_osc_x = int(round(1 / self.Qx))
+        turns_per_osc_y = int(round(1 / self.Qy))
         points_per_osc_x = turns_per_osc_x * n_bpms
         points_per_osc_y = turns_per_osc_y * n_bpms
 
         # Create figure
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
-        
+
         # Common styling
         label_font = 18
         tick_font = 15
         alpha = 0.15
         lw = 0.5
-        
+
         # Plot horizontal plane
         for i in range(min(n_particles, x_self.shape[0])):
-            ax1.plot(time_points, x_self[i], 'b', alpha=alpha, lw=lw)
-        
+            ax1.plot(time_points, x_self[i], "b", alpha=alpha, lw=lw)
+
         # Plot average horizontal oscillations
         x_avg = np.mean(x_self, axis=0)  # Average across particles
-        ax1.plot(time_points, x_avg, 'b', alpha=0.5, lw=6, label='Average')
-        
+        ax1.plot(time_points, x_avg, "b", alpha=0.5, lw=6, label="Average")
+
         # # Add oscillation markers
         for osc in range(points_per_osc_x, n_total_points, points_per_osc_x):
-            ax1.axvline(osc, color='navy', ls='--', alpha=0.5, lw=3)
-            ax1.text(osc, ax1.get_ylim()[1] * 0.95, f'{osc // n_bpms} Turns', 
-                    color='navy', fontsize=label_font-4, ha='center', va='top', rotation=90)
-        
+            ax1.axvline(osc, color="navy", ls="--", alpha=0.5, lw=3)
+            ax1.text(
+                osc,
+                ax1.get_ylim()[1] * 0.95,
+                f"{osc // n_bpms} Turns",
+                color="navy",
+                fontsize=label_font - 4,
+                ha="center",
+                va="top",
+                rotation=90,
+            )
+
         # Plot vertical plane
         for i in range(min(n_particles, y_self.shape[0])):
-            ax2.plot(time_points, y_self[i], 'g', alpha=alpha, lw=lw)
-        
+            ax2.plot(time_points, y_self[i], "g", alpha=alpha, lw=lw)
+
         # Plot average vertical oscillations
         y_avg = np.mean(y_self, axis=0)  # Average across particles
-        ax2.plot(time_points, y_avg, 'g', alpha=0.5, lw=6, label='Average')
-        
+        ax2.plot(time_points, y_avg, "g", alpha=0.5, lw=6, label="Average")
+
         # Add oscillation markers
         for osc in range(points_per_osc_y, n_total_points, points_per_osc_y):
-            ax2.axvline(osc, color='darkgreen', ls='--', alpha=0.5, lw=3)
-            ax2.text(osc, ax2.get_ylim()[1] * 0.95, f'{osc // n_bpms} Turns', 
-                    color='darkgreen', fontsize=label_font-4, ha='center', va='top', rotation=90)
-
+            ax2.axvline(osc, color="darkgreen", ls="--", alpha=0.5, lw=3)
+            ax2.text(
+                osc,
+                ax2.get_ylim()[1] * 0.95,
+                f"{osc // n_bpms} Turns",
+                color="darkgreen",
+                fontsize=label_font - 4,
+                ha="center",
+                va="top",
+                rotation=90,
+            )
 
         # Formatting
-        ax1.set_ylabel('Horizontal Position [m]', fontsize=label_font)
-        ax2.set_ylabel('Vertical Position [m]', fontsize=label_font)
-        ax2.set_xlabel('Cyclic Time (BPM Index × Turn Number)', fontsize=label_font)
-        
+        ax1.set_ylabel("Horizontal Position [m]", fontsize=label_font)
+        ax2.set_ylabel("Vertical Position [m]", fontsize=label_font)
+        ax2.set_xlabel("Cyclic Time (BPM Index × Turn Number)", fontsize=label_font)
+
         # Add tune annotations
-        ax1.text(0.5, 0.95, f'Qx = {self.Qx:.3f}\n1/Qx = {turns_per_osc_x} turns',
-                transform=ax1.transAxes, ha='right', va='top',
-                fontsize=label_font-2, bbox=dict(facecolor='white', alpha=0.8))
-        
-        ax2.text(0.5, 0.95, f'Qy = {self.Qy:.3f}\n1/Qy = {turns_per_osc_y} turns',
-                transform=ax2.transAxes, ha='right', va='top',
-                fontsize=label_font-2, bbox=dict(facecolor='white', alpha=0.8))
+        ax1.text(
+            0.5,
+            0.95,
+            f"Qx = {self.Qx:.3f}\n1/Qx = {turns_per_osc_x} turns",
+            transform=ax1.transAxes,
+            ha="right",
+            va="top",
+            fontsize=label_font - 2,
+            bbox=dict(facecolor="white", alpha=0.8),
+        )
+
+        ax2.text(
+            0.5,
+            0.95,
+            f"Qy = {self.Qy:.3f}\n1/Qy = {turns_per_osc_y} turns",
+            transform=ax2.transAxes,
+            ha="right",
+            va="top",
+            fontsize=label_font - 2,
+            bbox=dict(facecolor="white", alpha=0.8),
+        )
 
         # Add turn separators with annotations
         for t in range(n_bpms, n_total_points, n_bpms):
-            ax1.axvline(t, color='gray', ls=':', alpha=0.3, lw=5)
-            ax2.axvline(t, color='gray', ls=':', alpha=0.3, lw=5)
+            ax1.axvline(t, color="gray", ls=":", alpha=0.3, lw=5)
+            ax2.axvline(t, color="gray", ls=":", alpha=0.3, lw=5)
             if t % (n_bpms * 5) == 0:  # Annotate every 5 turns to avoid clutter
-                ax1.text(t, ax1.get_ylim()[0] * 0.95, f'Turn {t // n_bpms}', 
-                        color='gray', fontsize=label_font-4, ha='center', va='bottom', rotation=90)
-                ax2.text(t, ax2.get_ylim()[0] * 0.95, f'Turn {t // n_bpms}', 
-                        color='gray', fontsize=label_font-4, ha='center', va='bottom', rotation=90)
-
+                ax1.text(
+                    t,
+                    ax1.get_ylim()[0] * 0.95,
+                    f"Turn {t // n_bpms}",
+                    color="gray",
+                    fontsize=label_font - 4,
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                )
+                ax2.text(
+                    t,
+                    ax2.get_ylim()[0] * 0.95,
+                    f"Turn {t // n_bpms}",
+                    color="gray",
+                    fontsize=label_font - 4,
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                )
 
         # Final touches
         for ax in [ax1, ax2]:
             ax.grid(True)
-            ax.tick_params(axis='both', labelsize=tick_font)
-            ax.legend(loc='upper right', fontsize=label_font-2)
-        
-        fig.suptitle(f'Cyclic Betatron Oscillations (Turns {start_turn}-{end_turn}, {n_bpms} BPMs)', 
-                    fontsize=label_font+2, y=1.02)
+            ax.tick_params(axis="both", labelsize=tick_font)
+            ax.legend(loc="upper right", fontsize=label_font - 2)
+
+        fig.suptitle(
+            f"Cyclic Betatron Oscillations (Turns {start_turn}-{end_turn}, {n_bpms} BPMs)",
+            fontsize=label_font + 2,
+            y=1.02,
+        )
         plt.tight_layout()
-        plt.savefig(f"{self.figs_save_dir}/cyclic_betatron_{save_label}.png", 
-                format='png', bbox_inches='tight')
+        plt.savefig(
+            f"{self.figs_save_dir}/cyclic_betatron_{save_label}.png",
+            format="png",
+            bbox_inches="tight",
+        )
         plt.show()
 
-    def plot_betatron_oscillations_BPM(self, other_simulator, start_turn=0, end_turn=None, 
-                                n_particles=100, figsize=(20, 12), save_label=''):
+    def plot_betatron_oscillations_BPM(
+        self,
+        other_simulator,
+        start_turn=0,
+        end_turn=None,
+        n_particles=100,
+        figsize=(20, 12),
+        save_label="",
+    ):
         """
         Plot closed orbits and betatron oscillations for X and Y separately across multiple turns.
-        
+
         Parameters:
             other_simulator (SynchrotronSimulator): Simulator WITH errors
             start_turn (int): First turn to include in analysis
@@ -3492,20 +4049,22 @@ class SynchrotronSimulator:
             end_turn = self.n_turns - 1
         start_turn = max(0, start_turn)
         end_turn = min(self.n_turns - 1, end_turn)
-        
+
         if start_turn > end_turn:
             start_turn, end_turn = end_turn, start_turn  # Swap if reversed
 
         # Get data from both simulators
         def get_data(simulator, data_key):
-            data = getattr(simulator.bpm_readings[data_key], 'copy')()
-            return data[:, start_turn:end_turn+1, :]  # Shape: (particles, turns, bpms)
+            data = getattr(simulator.bpm_readings[data_key], "copy")()
+            return data[
+                :, start_turn : end_turn + 1, :
+            ]  # Shape: (particles, turns, bpms)
 
         # Get X and Y data for both simulators
-        x_self = get_data(self, 'x')
-        y_self = get_data(self, 'y')
-        x_other = get_data(other_simulator, 'x')
-        y_other = get_data(other_simulator, 'y')
+        x_self = get_data(self, "x")
+        y_self = get_data(self, "y")
+        x_other = get_data(other_simulator, "x")
+        y_other = get_data(other_simulator, "y")
 
         # Average over selected turns
         x_self_avg = np.mean(x_self, axis=1)
@@ -3531,50 +4090,104 @@ class SynchrotronSimulator:
 
         # Plot X plane
         # Non-distorted
-        ax1.plot(bpm_indices, x_co_self*1e6, '-', color='blue', 
-                label='Non-Distorted Closed Orbit', linewidth=3)
+        ax1.plot(
+            bpm_indices,
+            x_co_self * 1e6,
+            "-",
+            color="blue",
+            label="Non-Distorted Closed Orbit",
+            linewidth=3,
+        )
         for i in range(min(n_particles, x_self_avg.shape[0])):
-            ax1.plot(bpm_indices, x_self_avg[i,:]*1e6, color='blue', alpha=alpha, linewidth=lw)
+            ax1.plot(
+                bpm_indices,
+                x_self_avg[i, :] * 1e6,
+                color="blue",
+                alpha=alpha,
+                linewidth=lw,
+            )
 
         # Distorted
-        ax1.plot(bpm_indices, x_co_other*1e6, '--', color='red', 
-                label='Distorted Closed Orbit', linewidth=3)
+        ax1.plot(
+            bpm_indices,
+            x_co_other * 1e6,
+            "--",
+            color="red",
+            label="Distorted Closed Orbit",
+            linewidth=3,
+        )
         for i in range(min(n_particles, x_other_avg.shape[0])):
-            ax1.plot(bpm_indices, x_other_avg[i,:]*1e6, color='red', alpha=alpha, linewidth=lw)
+            ax1.plot(
+                bpm_indices,
+                x_other_avg[i, :] * 1e6,
+                color="red",
+                alpha=alpha,
+                linewidth=lw,
+            )
 
-        ax1.set_ylabel('Horizontal Position [μm]', fontsize=label_font)
+        ax1.set_ylabel("Horizontal Position [μm]", fontsize=label_font)
         ax1.grid(True)
         ax1.legend(fontsize=label_font)
-        ax1.tick_params(axis='both', labelsize=tick_font)
+        ax1.tick_params(axis="both", labelsize=tick_font)
 
         # Plot Y plane
         # Non-distorted
-        ax2.plot(bpm_indices, y_co_self*1e6, '-', color='blue', 
-                label='Non-Distorted Closed Orbit', linewidth=3)
+        ax2.plot(
+            bpm_indices,
+            y_co_self * 1e6,
+            "-",
+            color="blue",
+            label="Non-Distorted Closed Orbit",
+            linewidth=3,
+        )
         for i in range(min(n_particles, y_self_avg.shape[0])):
-            ax2.plot(bpm_indices, y_self_avg[i,:]*1e6, color='blue', alpha=alpha, linewidth=lw)
+            ax2.plot(
+                bpm_indices,
+                y_self_avg[i, :] * 1e6,
+                color="blue",
+                alpha=alpha,
+                linewidth=lw,
+            )
 
         # Distorted
-        ax2.plot(bpm_indices, y_co_other*1e6, '--', color='red', 
-                label='Distorted Closed Orbit', linewidth=3)
+        ax2.plot(
+            bpm_indices,
+            y_co_other * 1e6,
+            "--",
+            color="red",
+            label="Distorted Closed Orbit",
+            linewidth=3,
+        )
         for i in range(min(n_particles, y_other_avg.shape[0])):
-            ax2.plot(bpm_indices, y_other_avg[i,:]*1e6, color='red', alpha=alpha, linewidth=lw)
+            ax2.plot(
+                bpm_indices,
+                y_other_avg[i, :] * 1e6,
+                color="red",
+                alpha=alpha,
+                linewidth=lw,
+            )
 
-        ax2.set_xlabel('BPM Index', fontsize=label_font)
-        ax2.set_ylabel('Vertical Position [μm]', fontsize=label_font)
+        ax2.set_xlabel("BPM Index", fontsize=label_font)
+        ax2.set_ylabel("Vertical Position [μm]", fontsize=label_font)
         ax2.grid(True)
         ax2.legend(fontsize=label_font)
-        ax2.tick_params(axis='both', labelsize=tick_font)
+        ax2.tick_params(axis="both", labelsize=tick_font)
 
         # Main title
-        fig.suptitle(f'Closed Orbit and Betatron Oscillations (Turns {start_turn}-{end_turn})', 
-                    fontsize=label_font+2, y=1.02)
+        fig.suptitle(
+            f"Closed Orbit and Betatron Oscillations (Turns {start_turn}-{end_turn})",
+            fontsize=label_font + 2,
+            y=1.02,
+        )
 
         plt.tight_layout()
-        plt.savefig(f"{self.figs_save_dir}/betatron_oscillations_multi_turn_{save_label}.png", 
-                format='png', bbox_inches='tight')
+        plt.savefig(
+            f"{self.figs_save_dir}/betatron_oscillations_multi_turn_{save_label}.png",
+            format="png",
+            bbox_inches="tight",
+        )
         plt.show()
-        
+
     def cumulative_average(self, arr):
         """Calculate the cumulative average of an array."""
         cumsum = np.cumsum(arr)
@@ -3590,12 +4203,23 @@ class SynchrotronSimulator:
 
         # Use 'valid' mode to ensure the window fits completely within the data
         window = np.ones(window_size) / window_size
-        running_avg = np.convolve(data, window, mode='valid')
+        running_avg = np.convolve(data, window, mode="valid")
         return running_avg
 
-    def plot_comparison( self, other_simulator, cell_idx=0, start_idx=0, end_idx=None, viz_start_idx=0, viz_end_idx=None,
-                        save_label='0', fontsize=14, window_size=100, plot_all=True, extra_title=None
-        ):
+    def plot_comparison(
+        self,
+        other_simulator,
+        cell_idx=0,
+        start_idx=0,
+        end_idx=None,
+        viz_start_idx=0,
+        viz_end_idx=None,
+        save_label="0",
+        fontsize=14,
+        window_size=100,
+        plot_all=True,
+        extra_title=None,
+    ):
         """
         Plot comparison of CoM movements before and after applying errors for specific BPM(s).
 
@@ -3618,15 +4242,19 @@ class SynchrotronSimulator:
         viz_end_idx = viz_end_idx if viz_end_idx is not None else total_turns
 
         # Determine the number of BPMs (cells)
-        num_cells = self.bpm_readings['x'].shape[2]
+        num_cells = self.bpm_readings["x"].shape[2]
 
         # Function to process data for a single BPM
         def process_bpm(cell):
             # Extract BPM readings for the specified cell and turn range
-            self_x = self.bpm_readings['x'][:, start_idx:end_idx, cell].mean(axis=0)
-            self_y = self.bpm_readings['y'][:, start_idx:end_idx, cell].mean(axis=0)
-            other_x = other_simulator.bpm_readings['x'][:, start_idx:end_idx, cell].mean(axis=0)
-            other_y = other_simulator.bpm_readings['y'][:, start_idx:end_idx, cell].mean(axis=0)
+            self_x = self.bpm_readings["x"][:, start_idx:end_idx, cell].mean(axis=0)
+            self_y = self.bpm_readings["y"][:, start_idx:end_idx, cell].mean(axis=0)
+            other_x = other_simulator.bpm_readings["x"][
+                :, start_idx:end_idx, cell
+            ].mean(axis=0)
+            other_y = other_simulator.bpm_readings["y"][
+                :, start_idx:end_idx, cell
+            ].mean(axis=0)
 
             # Compute overall average CoM positions for both simulations
             com_x_no_error = np.mean(self_x) if len(self_x) > 0 else 0.0
@@ -3641,12 +4269,16 @@ class SynchrotronSimulator:
             print(f"plot_comparison() - BPM {cell}/")
             print(f"\t CoM No error: X = {com_x_no_error}, Y = {com_y_no_error}")
             print(f"\t CoM With Error: X = {com_x_with_error}, Y = {com_y_with_error}")
-            print('----')
+            print("----")
             print(f"\t ΔX = {delta_x:.7f} m, {delta_x * 1e6:.2f} micron")
             print(f"\t ΔY = {delta_y:.7f} m, {delta_y * 1e6:.2f} micron")
-            print(f"\t beam epsilon X = {self.epsilon_horizontal:.7f} m, {self.epsilon_horizontal * 1e6:.2f} micron")
-            print(f"\t beam epsilon Y = {self.epsilon_vertical:.7f} m, {self.epsilon_vertical * 1e6:.2f} micron")
-            print('----')
+            print(
+                f"\t beam epsilon X = {self.epsilon_horizontal:.7f} m, {self.epsilon_horizontal * 1e6:.2f} micron"
+            )
+            print(
+                f"\t beam epsilon Y = {self.epsilon_vertical:.7f} m, {self.epsilon_vertical * 1e6:.2f} micron"
+            )
+            print("----")
 
             # Prepare revolution numbers for plotting
             rev_numbers = np.arange(start_idx, end_idx)
@@ -3655,8 +4287,9 @@ class SynchrotronSimulator:
                 return None
 
             # Ensure arrays have the same length
-            min_length = min(len(rev_numbers), len(self_x), len(other_x),
-                            len(self_y), len(other_y))
+            min_length = min(
+                len(rev_numbers), len(self_x), len(other_x), len(self_y), len(other_y)
+            )
             if min_length == 0:
                 print(f"Insufficient data for BPM {cell}. Skipping.")
                 return None
@@ -3689,21 +4322,23 @@ class SynchrotronSimulator:
             rev_plot = rev_numbers[viz_start:]
 
             if window_size > 1:
-                rev_plot = np.linspace(viz_start, viz_start + len(rev_plot), len(self_x_plot))
+                rev_plot = np.linspace(
+                    viz_start, viz_start + len(rev_plot), len(self_x_plot)
+                )
 
             return {
-                'rev': rev_plot,
-                'self_x': self_x_plot,
-                'other_x': other_x_plot,
-                'self_y': self_y_plot,
-                'other_y': other_y_plot,
-                'cell': cell,
-                'delta_x': delta_x,
-                'delta_y': delta_y,
-                'com_x_no_error': com_x_no_error,
-                'com_y_no_error': com_y_no_error,
-                'com_x_with_error': com_x_with_error,
-                'com_y_with_error': com_y_with_error,
+                "rev": rev_plot,
+                "self_x": self_x_plot,
+                "other_x": other_x_plot,
+                "self_y": self_y_plot,
+                "other_y": other_y_plot,
+                "cell": cell,
+                "delta_x": delta_x,
+                "delta_y": delta_y,
+                "com_x_no_error": com_x_no_error,
+                "com_y_no_error": com_y_no_error,
+                "com_x_with_error": com_x_with_error,
+                "com_y_with_error": com_y_with_error,
             }
 
         if not plot_all:
@@ -3715,38 +4350,50 @@ class SynchrotronSimulator:
 
             # Plot horizontal positions comparison
             plt.figure(figsize=(10, 6))
-            plt.plot(data['rev'], data['self_x'], label='No Error', color='blue')
-            plt.plot(data['rev'], data['other_x'], label='With Quadrupole Error', color='red')
-            plt.xlabel('Revolution Number', fontsize=fontsize)
-            plt.ylabel('Horizontal Position x (State)', fontsize=fontsize)
-            title_str = f'Comparison of Horizontal Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}'
+            plt.plot(data["rev"], data["self_x"], label="No Error", color="blue")
+            plt.plot(
+                data["rev"], data["other_x"], label="With Quadrupole Error", color="red"
+            )
+            plt.xlabel("Revolution Number", fontsize=fontsize)
+            plt.ylabel("Horizontal Position x (State)", fontsize=fontsize)
+            title_str = f"Comparison of Horizontal Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}"
             if extra_title:
-                title_str += f'\n{extra_title}'
+                title_str += f"\n{extra_title}"
             plt.title(title_str, fontsize=fontsize)
-            plt.tick_params(axis='both', labelsize=fontsize)
+            plt.tick_params(axis="both", labelsize=fontsize)
             plt.minorticks_on()
             plt.legend(fontsize=fontsize)
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(f"{self.figs_save_dir}/plot_comparison_X_{save_label}.eps", bbox_inches='tight', format='eps')
+            plt.savefig(
+                f"{self.figs_save_dir}/plot_comparison_X_{save_label}.eps",
+                bbox_inches="tight",
+                format="eps",
+            )
             plt.show()
 
             # Plot vertical positions comparison
             plt.figure(figsize=(10, 6))
-            plt.plot(data['rev'], data['self_y'], label='No Error', color='blue')
-            plt.plot(data['rev'], data['other_y'], label='With Quadrupole Error', color='red')
-            plt.xlabel('Revolution Number', fontsize=fontsize)
-            plt.ylabel('Vertical Position y (State)', fontsize=fontsize)
-            title_str = f'Comparison of Vertical Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}'
+            plt.plot(data["rev"], data["self_y"], label="No Error", color="blue")
+            plt.plot(
+                data["rev"], data["other_y"], label="With Quadrupole Error", color="red"
+            )
+            plt.xlabel("Revolution Number", fontsize=fontsize)
+            plt.ylabel("Vertical Position y (State)", fontsize=fontsize)
+            title_str = f"Comparison of Vertical Positions at BPM {cell_idx} from Turn {start_idx} to {end_idx}"
             if extra_title:
-                title_str += f'\n{extra_title}'
+                title_str += f"\n{extra_title}"
             plt.title(title_str, fontsize=fontsize)
-            plt.tick_params(axis='both', labelsize=fontsize)
+            plt.tick_params(axis="both", labelsize=fontsize)
             plt.minorticks_on()
             plt.legend(fontsize=fontsize)
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(f"{self.figs_save_dir}/plot_comparison_Y_{save_label}.eps", bbox_inches='tight', format='eps')
+            plt.savefig(
+                f"{self.figs_save_dir}/plot_comparison_Y_{save_label}.eps",
+                bbox_inches="tight",
+                format="eps",
+            )
             plt.show()
 
         else:
@@ -3763,10 +4410,10 @@ class SynchrotronSimulator:
                 return
 
             # Collect overall CoM data
-            com_x_no_error_all = [data['com_x_no_error'] for data in all_data]
-            com_x_with_error_all = [data['com_x_with_error'] for data in all_data]
-            com_y_no_error_all = [data['com_y_no_error'] for data in all_data]
-            com_y_with_error_all = [data['com_y_with_error'] for data in all_data]
+            com_x_no_error_all = [data["com_x_no_error"] for data in all_data]
+            com_x_with_error_all = [data["com_x_with_error"] for data in all_data]
+            com_y_no_error_all = [data["com_y_no_error"] for data in all_data]
+            com_y_with_error_all = [data["com_y_with_error"] for data in all_data]
 
             com_x_no_error_all = np.array(com_x_no_error_all)
             com_x_with_error_all = np.array(com_x_with_error_all)
@@ -3781,19 +4428,28 @@ class SynchrotronSimulator:
             n_rows = int(np.ceil(total_subplots / n_cols))
 
             # Plot horizontal positions comparison for all BPMs
-            fig_x, axes_x = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharex=False, sharey=False)
+            fig_x, axes_x = plt.subplots(
+                n_rows,
+                n_cols,
+                figsize=(5 * n_cols, 4 * n_rows),
+                sharex=False,
+                sharey=False,
+            )
             axes_x = axes_x.flatten()  # Flatten in case of multiple rows
 
             for idx, data in enumerate(all_data):
                 ax = axes_x[idx]
-                ax.plot(data['rev'], data['self_x'], label='No Error', color='blue')
-                ax.plot(data['rev'], data['other_x'], label='With Error', color='red')
-                ax.set_xlabel('Rev', fontsize=fontsize)
-                ax.set_ylabel('x (State)', fontsize=fontsize)
-                ax.set_title(f'BPM {data["cell"]}\n (ΔX {data["delta_x"] * 1e6:.3f} μm)', fontsize=fontsize)
-                ax.tick_params(axis='both', labelsize=fontsize)
+                ax.plot(data["rev"], data["self_x"], label="No Error", color="blue")
+                ax.plot(data["rev"], data["other_x"], label="With Error", color="red")
+                ax.set_xlabel("Rev", fontsize=fontsize)
+                ax.set_ylabel("x (State)", fontsize=fontsize)
+                ax.set_title(
+                    f"BPM {data['cell']}\n (ΔX {data['delta_x'] * 1e6:.3f} μm)",
+                    fontsize=fontsize,
+                )
+                ax.tick_params(axis="both", labelsize=fontsize)
                 ax.minorticks_on()
-                ax.legend(fontsize=fontsize-2)
+                ax.legend(fontsize=fontsize - 2)
                 ax.grid(True)
 
             # Add the extra subplot for overall CoM comparison
@@ -3803,44 +4459,67 @@ class SynchrotronSimulator:
             indices = np.arange(num_cells)
             width = 0.35  # Width of the bars
 
-            ax_overall_x.plot(com_x_no_error_all, '-o', label='No Error', color='blue')
-            ax_overall_x.plot(com_x_with_error_all, '-.x', label='With Error', color='red')
-            ax_overall_x.plot(com_x_with_error_all - com_x_no_error_all, label='Diff', color='green')
-            ax_overall_x.set_xlabel('BPM Index', fontsize=fontsize)
-            ax_overall_x.set_ylabel('Average Horizontal CoM (μm)', fontsize=fontsize)
-            ax_overall_x.set_title('Overall Horizontal CoM Comparison', fontsize=fontsize)
+            ax_overall_x.plot(com_x_no_error_all, "-o", label="No Error", color="blue")
+            ax_overall_x.plot(
+                com_x_with_error_all, "-.x", label="With Error", color="red"
+            )
+            ax_overall_x.plot(
+                com_x_with_error_all - com_x_no_error_all, label="Diff", color="green"
+            )
+            ax_overall_x.set_xlabel("BPM Index", fontsize=fontsize)
+            ax_overall_x.set_ylabel("Average Horizontal CoM (μm)", fontsize=fontsize)
+            ax_overall_x.set_title(
+                "Overall Horizontal CoM Comparison", fontsize=fontsize
+            )
             ax_overall_x.set_xticks(indices)
-            ax_overall_x.set_xticklabels([str(data['cell']) for data in all_data], rotation=45, fontsize=fontsize-2)
-            ax_overall_x.tick_params(axis='both', labelsize=fontsize)
-            ax_overall_x.legend(fontsize=fontsize-2)
-            ax_overall_x.grid(True, axis='y')
+            ax_overall_x.set_xticklabels(
+                [str(data["cell"]) for data in all_data],
+                rotation=45,
+                fontsize=fontsize - 2,
+            )
+            ax_overall_x.tick_params(axis="both", labelsize=fontsize)
+            ax_overall_x.legend(fontsize=fontsize - 2)
+            ax_overall_x.grid(True, axis="y")
 
             # Hide any unused subplots
             for idx in range(total_subplots, n_rows * n_cols):
                 fig_x.delaxes(axes_x[idx])
-            
-            title_str = f'Comparison of Horizontal Positions for All BPMs'
+
+            title_str = f"Comparison of Horizontal Positions for All BPMs"
             if extra_title:
-                title_str += f'\n{extra_title}'
-            fig_x.suptitle(title_str, fontsize=fontsize+2)
+                title_str += f"\n{extra_title}"
+            fig_x.suptitle(title_str, fontsize=fontsize + 2)
             fig_x.tight_layout(rect=[0, 0.03, 1, 0.95])
-            fig_x.savefig(f"{self.figs_save_dir}/plot_comparison_ALL_X_{save_label}.eps", bbox_inches='tight', format='eps')
+            fig_x.savefig(
+                f"{self.figs_save_dir}/plot_comparison_ALL_X_{save_label}.eps",
+                bbox_inches="tight",
+                format="eps",
+            )
             plt.show()
 
             # Plot vertical positions comparison for all BPMs
-            fig_y, axes_y = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharex=False, sharey=False)
+            fig_y, axes_y = plt.subplots(
+                n_rows,
+                n_cols,
+                figsize=(5 * n_cols, 4 * n_rows),
+                sharex=False,
+                sharey=False,
+            )
             axes_y = axes_y.flatten()
 
             for idx, data in enumerate(all_data):
                 ax = axes_y[idx]
-                ax.plot(data['rev'], data['self_y'], label='No Error', color='blue')
-                ax.plot(data['rev'], data['other_y'], label='With Error', color='red')
-                ax.set_xlabel('Rev', fontsize=fontsize)
-                ax.set_ylabel('y (State)', fontsize=fontsize)
-                ax.set_title(f'BPM {data["cell"]}\n (ΔY {data["delta_y"] * 1e6:.3f} μm)', fontsize=fontsize)
-                ax.tick_params(axis='both', labelsize=fontsize)
+                ax.plot(data["rev"], data["self_y"], label="No Error", color="blue")
+                ax.plot(data["rev"], data["other_y"], label="With Error", color="red")
+                ax.set_xlabel("Rev", fontsize=fontsize)
+                ax.set_ylabel("y (State)", fontsize=fontsize)
+                ax.set_title(
+                    f"BPM {data['cell']}\n (ΔY {data['delta_y'] * 1e6:.3f} μm)",
+                    fontsize=fontsize,
+                )
+                ax.tick_params(axis="both", labelsize=fontsize)
                 ax.minorticks_on()
-                ax.legend(fontsize=fontsize-2)
+                ax.legend(fontsize=fontsize - 2)
                 ax.grid(True)
 
             # Add the extra subplot for overall CoM comparison
@@ -3850,183 +4529,282 @@ class SynchrotronSimulator:
             indices = np.arange(num_cells)
             width = 0.35  # Width of the bars
 
-            ax_overall_y.plot(com_y_no_error_all, '-o', label='No Error', color='blue')
-            ax_overall_y.plot(com_y_with_error_all, '-.x', label='With Error', color='red')
-            ax_overall_y.plot(com_y_with_error_all - com_y_no_error_all, label='Diff', color='green')
-            ax_overall_y.set_xlabel('BPM Index', fontsize=fontsize)
-            ax_overall_y.set_ylabel('Average Vertical CoM (μm)', fontsize=fontsize)
-            ax_overall_y.set_title('Overall Vertical CoM Comparison', fontsize=fontsize)
+            ax_overall_y.plot(com_y_no_error_all, "-o", label="No Error", color="blue")
+            ax_overall_y.plot(
+                com_y_with_error_all, "-.x", label="With Error", color="red"
+            )
+            ax_overall_y.plot(
+                com_y_with_error_all - com_y_no_error_all, label="Diff", color="green"
+            )
+            ax_overall_y.set_xlabel("BPM Index", fontsize=fontsize)
+            ax_overall_y.set_ylabel("Average Vertical CoM (μm)", fontsize=fontsize)
+            ax_overall_y.set_title("Overall Vertical CoM Comparison", fontsize=fontsize)
             ax_overall_y.set_xticks(indices)
-            ax_overall_y.set_xticklabels([str(data['cell']) for data in all_data], rotation=45, fontsize=fontsize-2)
-            ax_overall_y.tick_params(axis='both', labelsize=fontsize)
-            ax_overall_y.legend(fontsize=fontsize-2)
-            ax_overall_y.grid(True, axis='y')
+            ax_overall_y.set_xticklabels(
+                [str(data["cell"]) for data in all_data],
+                rotation=45,
+                fontsize=fontsize - 2,
+            )
+            ax_overall_y.tick_params(axis="both", labelsize=fontsize)
+            ax_overall_y.legend(fontsize=fontsize - 2)
+            ax_overall_y.grid(True, axis="y")
 
             # Hide any unused subplots
             for idx in range(total_subplots, n_rows * n_cols):
                 fig_y.delaxes(axes_y[idx])
 
-            title_str = f'Comparison of Vertical Positions for All BPMs'
+            title_str = f"Comparison of Vertical Positions for All BPMs"
             if extra_title:
-                title_str += f'\n{extra_title}'
-            fig_y.suptitle(title_str, fontsize=fontsize+2)
+                title_str += f"\n{extra_title}"
+            fig_y.suptitle(title_str, fontsize=fontsize + 2)
             fig_y.tight_layout(rect=[0, 0.03, 1, 0.95])
-            fig_y.savefig(f"{self.figs_save_dir}/plot_comparison_ALL_Y_{save_label}.eps", bbox_inches='tight', format='eps')
+            fig_y.savefig(
+                f"{self.figs_save_dir}/plot_comparison_ALL_Y_{save_label}.eps",
+                bbox_inches="tight",
+                format="eps",
+            )
             plt.show()
 
-    def plot_transverse_vs_longitudinal(self, other_simulator=None, particle_idx=0, start_rev=0, end_rev=-1, save_path_prefix=None):
+    def plot_transverse_vs_longitudinal(
+        self,
+        other_simulator=None,
+        particle_idx=0,
+        start_rev=0,
+        end_rev=-1,
+        save_path_prefix=None,
+    ):
         """
         Create two separate plots: y vs. s and x vs. s for a given particle using BPM readings.
         If other_simulator is provided, compare x vs. s and y vs. s for both simulators on the same plots.
         Mark BPM positions with vertical dashed lines and label them as bpm_0, bpm_1, etc.
-        
+
         Parameters:
             other_simulator (SynchrotronSimulator): Another simulator instance to compare (default: None).
             particle_idx (int): Index of the particle to plot (default: 0).
-            save_path_prefix (str): Prefix for saving plots (e.g., 'plot' saves 'plot_y_vs_s.png' and 'plot_x_vs_s.png'). 
+            save_path_prefix (str): Prefix for saving plots (e.g., 'plot' saves 'plot_y_vs_s.png' and 'plot_x_vs_s.png').
                                 If None, displays plots (default: None).
         """
-        
+
         # Validate self simulator
-        if self.bpm_readings['x'] is None or self.bpm_readings['y'] is None:
-            raise ValueError("BPM readings not available for self simulator. Run simulation first.")
-        
+        if self.bpm_readings["x"] is None or self.bpm_readings["y"] is None:
+            raise ValueError(
+                "BPM readings not available for self simulator. Run simulation first."
+            )
+
         # Extract s-positions for self simulator
         s_bpm_self = []
         elements_per_cell = {}
         for elem in self.lattice_elements_positions:
-            cell_idx = elem['cell_index']
+            cell_idx = elem["cell_index"]
             if cell_idx not in elements_per_cell:
                 elements_per_cell[cell_idx] = []
             elements_per_cell[cell_idx].append(elem)
-        
+
         for cell_idx in sorted(elements_per_cell.keys()):
             last_elem = elements_per_cell[cell_idx][-1]
-            s_bpm_self.append(last_elem['end_s'])
+            s_bpm_self.append(last_elem["end_s"])
         s_bpm_self = np.array(s_bpm_self)
-        
+
         n_turns = end_rev - start_rev
-        
+
         # Adjust to start at s=0
         s_offset_self = s_bpm_self[0]
         s_bpm_self_adjusted = s_bpm_self - s_offset_self
         s_values_self = np.tile(s_bpm_self_adjusted, n_turns)
-        
+
         # Get x and y values for self simulator
-        x_values_self = self.bpm_readings['x'][particle_idx][start_rev:end_rev].flatten()
-        y_values_self = self.bpm_readings['y'][particle_idx][start_rev:end_rev].flatten()
-        
+        x_values_self = self.bpm_readings["x"][particle_idx][
+            start_rev:end_rev
+        ].flatten()
+        y_values_self = self.bpm_readings["y"][particle_idx][
+            start_rev:end_rev
+        ].flatten()
+
         # Initialize data for other simulator
         s_values_other = None
         x_values_other = None
         y_values_other = None
         s_bpm_other_adjusted = None
-        
+
         if other_simulator is not None:
             # Validate other simulator
-            if other_simulator.bpm_readings['x'] is None or other_simulator.bpm_readings['y'] is None:
-                raise ValueError("BPM readings not available for other simulator. Run simulation first.")
-            if self.n_turns != other_simulator.n_turns or self.n_FODO != other_simulator.n_FODO:
-                raise ValueError("Simulators must have the same number of turns and FODO cells for comparison.")
-            
+            if (
+                other_simulator.bpm_readings["x"] is None
+                or other_simulator.bpm_readings["y"] is None
+            ):
+                raise ValueError(
+                    "BPM readings not available for other simulator. Run simulation first."
+                )
+            if (
+                self.n_turns != other_simulator.n_turns
+                or self.n_FODO != other_simulator.n_FODO
+            ):
+                raise ValueError(
+                    "Simulators must have the same number of turns and FODO cells for comparison."
+                )
+
             # Extract s-positions for other simulator
             s_bpm_other = []
             elements_per_cell = {}
             for elem in other_simulator.lattice_elements_positions:
-                cell_idx = elem['cell_index']
+                cell_idx = elem["cell_index"]
                 if cell_idx not in elements_per_cell:
                     elements_per_cell[cell_idx] = []
                 elements_per_cell[cell_idx].append(elem)
-            
+
             for cell_idx in sorted(elements_per_cell.keys()):
                 last_elem = elements_per_cell[cell_idx][-1]
-                s_bpm_other.append(last_elem['end_s'])
+                s_bpm_other.append(last_elem["end_s"])
             s_bpm_other = np.array(s_bpm_other)
-            
+
             # Adjust to start at s=0
             s_offset_other = s_bpm_other[0]
             s_bpm_other_adjusted = s_bpm_other - s_offset_other
             s_values_other = np.tile(s_bpm_other_adjusted, n_turns)
-            
+
             # Get x and y values for other simulator
-            x_values_other = other_simulator.bpm_readings['x'][particle_idx][start_rev:end_rev].flatten()
-            y_values_other = other_simulator.bpm_readings['y'][particle_idx][start_rev:end_rev].flatten()
-        
+            x_values_other = other_simulator.bpm_readings["x"][particle_idx][
+                start_rev:end_rev
+            ].flatten()
+            y_values_other = other_simulator.bpm_readings["y"][particle_idx][
+                start_rev:end_rev
+            ].flatten()
+
         # Plot 1: y vs. s
         fig_y, ax_y = plt.subplots(figsize=(12, 6))
-        ax_y.plot(s_values_self, y_values_self, 'b-', label=f'Self: y (Particle {particle_idx})')
-        
+        ax_y.plot(
+            s_values_self,
+            y_values_self,
+            "b-",
+            label=f"Self: y (Particle {particle_idx})",
+        )
+
         if other_simulator is not None:
-            ax_y.plot(s_values_other, y_values_other, 'r--', label=f'Other: y (Particle {particle_idx})')
-        
+            ax_y.plot(
+                s_values_other,
+                y_values_other,
+                "r--",
+                label=f"Other: y (Particle {particle_idx})",
+            )
+
         # Mark revolution boundaries
         for turn in range(n_turns):
             boundary_idx = turn * self.n_FODO
             if boundary_idx < len(s_values_self):
-                ax_y.axvline(x=s_values_self[boundary_idx], color='k', linestyle=':', alpha=0.5, 
-                            label='Revolution Boundary' if turn == 0 else None)
-        
+                ax_y.axvline(
+                    x=s_values_self[boundary_idx],
+                    color="k",
+                    linestyle=":",
+                    alpha=0.5,
+                    label="Revolution Boundary" if turn == 0 else None,
+                )
+
         # Mark BPM positions with labels
         for turn in range(n_turns):
             for i, s_bpm in enumerate(s_bpm_self_adjusted):
                 s_pos = s_bpm + turn * s_bpm_self_adjusted[-1]
-                ax_y.axvline(x=s_pos, color='gray', linestyle='--', alpha=0.3, 
-                            label='BPM Position' if turn == 0 and i == 0 else None)
+                ax_y.axvline(
+                    x=s_pos,
+                    color="gray",
+                    linestyle="--",
+                    alpha=0.3,
+                    label="BPM Position" if turn == 0 and i == 0 else None,
+                )
                 # Add vertical text label
-                ax_y.text(s_pos, 1.05, f'bpm_{i}', rotation=90, fontsize=8, 
-                        verticalalignment='bottom', horizontalalignment='center', 
-                        transform=ax_y.get_xaxis_transform())
-        
-        ax_y.set_xlabel('Longitudinal Position s (meters)')
-        ax_y.set_ylabel('Vertical Position y (meters)')
-        ax_y.set_title(f'Vertical Position y vs. Longitudinal Position s (Particle {particle_idx})\nRevs[{start_rev} - {end_rev}]')
+                ax_y.text(
+                    s_pos,
+                    1.05,
+                    f"bpm_{i}",
+                    rotation=90,
+                    fontsize=8,
+                    verticalalignment="bottom",
+                    horizontalalignment="center",
+                    transform=ax_y.get_xaxis_transform(),
+                )
+
+        ax_y.set_xlabel("Longitudinal Position s (meters)")
+        ax_y.set_ylabel("Vertical Position y (meters)")
+        ax_y.set_title(
+            f"Vertical Position y vs. Longitudinal Position s (Particle {particle_idx})\nRevs[{start_rev} - {end_rev}]"
+        )
         ax_y.grid(True)
         ax_y.legend()
         plt.tight_layout()
-        
+
         if save_path_prefix:
-            plt.savefig(f'{save_path_prefix}_y_vs_s.png')
+            plt.savefig(f"{save_path_prefix}_y_vs_s.png")
             plt.close(fig_y)
         else:
             plt.show()
-        
+
         # Plot 2: x vs. s
         fig_x, ax_x = plt.subplots(figsize=(12, 6))
-        ax_x.plot(s_values_self, x_values_self, 'g-', label=f'Self: x (Particle {particle_idx})')
-        
+        ax_x.plot(
+            s_values_self,
+            x_values_self,
+            "g-",
+            label=f"Self: x (Particle {particle_idx})",
+        )
+
         if other_simulator is not None:
-            ax_x.plot(s_values_other, x_values_other, 'r--', label=f'Other: x (Particle {particle_idx})')
-        
+            ax_x.plot(
+                s_values_other,
+                x_values_other,
+                "r--",
+                label=f"Other: x (Particle {particle_idx})",
+            )
+
         # Mark revolution boundaries
         for turn in range(n_turns):
             boundary_idx = turn * self.n_FODO
             if boundary_idx < len(s_values_self):
-                ax_x.axvline(x=s_pos, color='k', linestyle=':', alpha=0.5, 
-                            label='Revolution Boundary' if turn == 0 else None)
-        
+                ax_x.axvline(
+                    x=s_pos,
+                    color="k",
+                    linestyle=":",
+                    alpha=0.5,
+                    label="Revolution Boundary" if turn == 0 else None,
+                )
+
         # Mark BPM positions with labels
         for turn in range(n_turns):
             for i, s_bpm in enumerate(s_bpm_self_adjusted):
                 s_pos = s_bpm + turn * s_bpm_self_adjusted[-1]
-                ax_x.axvline(x=s_pos, color='gray', linestyle='--', alpha=0.3, 
-                            label='BPM Position' if turn == 0 and i == 0 else None)
+                ax_x.axvline(
+                    x=s_pos,
+                    color="gray",
+                    linestyle="--",
+                    alpha=0.3,
+                    label="BPM Position" if turn == 0 and i == 0 else None,
+                )
                 # Add vertical text label
-                ax_x.text(s_pos, 1.05, f'bpm_{i}', rotation=90, fontsize=8, 
-                        verticalalignment='bottom', horizontalalignment='center', 
-                        transform=ax_x.get_xaxis_transform())
-        
-        ax_x.set_xlabel('Longitudinal Position s (meters)')
-        ax_x.set_ylabel('Horizontal Position x (meters)')
-        ax_x.set_title(f'Horizontal Position x vs. Longitudinal Position s (Particle {particle_idx})')
+                ax_x.text(
+                    s_pos,
+                    1.05,
+                    f"bpm_{i}",
+                    rotation=90,
+                    fontsize=8,
+                    verticalalignment="bottom",
+                    horizontalalignment="center",
+                    transform=ax_x.get_xaxis_transform(),
+                )
+
+        ax_x.set_xlabel("Longitudinal Position s (meters)")
+        ax_x.set_ylabel("Horizontal Position x (meters)")
+        ax_x.set_title(
+            f"Horizontal Position x vs. Longitudinal Position s (Particle {particle_idx})"
+        )
         ax_x.grid(True)
         ax_x.legend()
         plt.tight_layout()
-        
+
         if save_path_prefix:
-            plt.savefig(f'{save_path_prefix}_x_vs_s.png')
+            plt.savefig(f"{save_path_prefix}_x_vs_s.png")
             plt.close(fig_x)
         else:
             plt.show()
+
+
 class SimulationRunner:
     """
     Class to run multiple synchrotron simulations based on provided configurations.
@@ -4044,7 +4822,7 @@ class SimulationRunner:
         """
         self.base_configurations = base_configurations
         self.common_parameters = common_parameters
-        self.simulators_no_error = {}    # Dict to store simulators without errors
+        self.simulators_no_error = {}  # Dict to store simulators without errors
         self.simulators_with_error = {}  # Dict to store simulators with errors
         self.initial_states = None
 
@@ -4056,7 +4834,7 @@ class SimulationRunner:
         """
         Generate random particle positions within a circle of radius R in meters.
         """
-        
+
         # Generate random radius values (r) uniformly within the circle
         r = np.sqrt(np.random.uniform(0, R**2, num_particles))  # Uniform in area
 
@@ -4072,170 +4850,231 @@ class SimulationRunner:
     def _generate_initial_states(self, merged_config, simulator_no_error, verbose=True):
         """
         Generate initial particle states based on the configuration.
-        
+
         Parameters:
             merged_config (dict): Merged configuration parameters.
             simulator_no_error (SynchrotronSimulator): Simulator instance for Twiss parameter calculation.
             verbose (bool): Whether to print verbose output.
-            
+
         Returns:
             np.ndarray: Array of initial particle states with shape (num_particles, 4).
         """
         # Extract initial condition ranges
-        x0_mean, x0_std = merged_config['x0_mean_std']
-        xp0_mean, xp0_std = merged_config['xp0_mean_std']
-        y0_mean, y0_std = merged_config['y0_mean_std']
-        yp0_mean, yp0_std = merged_config['yp0_mean_std']
-        
+        x0_mean, x0_std = merged_config["x0_mean_std"]
+        xp0_mean, xp0_std = merged_config["xp0_mean_std"]
+        y0_mean, y0_std = merged_config["y0_mean_std"]
+        yp0_mean, yp0_std = merged_config["yp0_mean_std"]
+
         # Generate initial_states based on the extracted ranges
-        if merged_config['particles_sampling_method'] in ['normal', 'circle_with_radius']:
-            if merged_config['particles_sampling_method'] == 'normal':
-                x0s = self.generate_init_states(x0_mean, x0_std, size=merged_config['num_particles'])
-                y0s = self.generate_init_states(y0_mean, y0_std, size=merged_config['num_particles'])
-            
-            elif merged_config['particles_sampling_method'] == 'circle_with_radius':
-                radius = merged_config['sampling_circle_radius']
-                x0s, y0s = self.generate_init_pos_radius(num_particles=merged_config['num_particles'])
-            
-            # X' Y' angles in radians                
+        if merged_config["particles_sampling_method"] in [
+            "normal",
+            "circle_with_radius",
+        ]:
+            if merged_config["particles_sampling_method"] == "normal":
+                x0s = self.generate_init_states(
+                    x0_mean, x0_std, size=merged_config["num_particles"]
+                )
+                y0s = self.generate_init_states(
+                    y0_mean, y0_std, size=merged_config["num_particles"]
+                )
+
+            elif merged_config["particles_sampling_method"] == "circle_with_radius":
+                radius = merged_config["sampling_circle_radius"]
+                x0s, y0s = self.generate_init_pos_radius(
+                    num_particles=merged_config["num_particles"]
+                )
+
+            # X' Y' angles in radians
             if xp0_mean == xp0_std == 0.0:
-                xp0s = np.zeros(merged_config['num_particles'])
+                xp0s = np.zeros(merged_config["num_particles"])
             else:
-                xp0s = self.generate_init_states(xp0_mean, xp0_std, size=merged_config['num_particles'])
-            
+                xp0s = self.generate_init_states(
+                    xp0_mean, xp0_std, size=merged_config["num_particles"]
+                )
+
             if yp0_mean == yp0_std == 0.0:
-                yp0s = np.zeros(merged_config['num_particles'])
+                yp0s = np.zeros(merged_config["num_particles"])
             else:
-                yp0s = self.generate_init_states(yp0_mean, yp0_std, size=merged_config['num_particles'])
-            
+                yp0s = self.generate_init_states(
+                    yp0_mean, yp0_std, size=merged_config["num_particles"]
+                )
+
             mean_x0s = np.mean(x0s)
             mean_y0s = np.mean(y0s)
-            
+
             initial_states = np.stack([x0s, xp0s, y0s, yp0s], axis=1)
             self.initial_states = initial_states
-        
+
             if verbose:
-                print(f"init X and Y sampling method: {merged_config['particles_sampling_method']}")
+                print(
+                    f"init X and Y sampling method: {merged_config['particles_sampling_method']}"
+                )
                 print(f"init states mean_x0s={mean_x0s}, mean_y0s={mean_y0s}")
                 print("initial_states = ", initial_states)
-        
-        elif merged_config['particles_sampling_method'] == 'from_twiss_params':
-            alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = simulator_no_error.compute_twiss_parameters()
-            print(f'Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}')
-            initial_states = simulator_no_error.generate_initial_states_from_twiss(alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, merged_config['num_particles'])                        
+
+        elif merged_config["particles_sampling_method"] == "from_twiss_params":
+            alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = (
+                simulator_no_error.compute_twiss_parameters()
+            )
+            print(
+                f"Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}"
+            )
+            initial_states = simulator_no_error.generate_initial_states_from_twiss(
+                alpha_x,
+                beta_x,
+                epsilon_x,
+                alpha_y,
+                beta_y,
+                epsilon_y,
+                merged_config["num_particles"],
+            )
             self.initial_states = initial_states
-            
+
         return initial_states
 
     def _create_simulator(self, config, merged_config, verbose=True):
         """
         Helper method to create a simulator instance with the given configuration.
         Does not run the simulation.
-        
+
         Parameters:
             config (dict): Configuration dictionary for this simulation.
             merged_config (dict): Merged base and common parameters.
             verbose (bool): Whether to print verbose output.
-            
+
         Returns:
             SynchrotronSimulator: Initialized simulator instance.
         """
         # Initialize simulator
         simulator = SynchrotronSimulator(
-            design_radius=config['design_radius'],
-            G=config['G'],
-            f=config['f'],
-            use_thin_lens=config['use_thin_lens'],
-            L_quad=config['L_quad'],
-            L_straight=config['L_straight'],
-            p=config['p'],
-            q=config['q'],
-            n_turns=config['n_turns'],
-            total_dipole_bending_angle=config['total_dipole_bending_angle'],
-            num_particles=config['num_particles'],
-            n_FODO=config['n_FODO'],
-            L_dipole=config['L_dipole'],
-            n_Dipoles=config['n_Dipoles'],
-            mag_field_range=merged_config.get('mag_field_range', (0.5, 2.0)),
-            dipole_length_range=merged_config.get('dipole_length_range', (0.5, 5.0)),
-            horizontal_tune_range=merged_config.get('horizontal_tune_range', (0.2, 0.8)),
-            vertical_tune_range=merged_config.get('vertical_tune_range', (0.2, 0.8)),
-            use_gpu_torch=merged_config.get('use_gpu_torch', False),
-            use_gpu_numba=merged_config.get('use_gpu_numba', False),
-            max_iter_per_infer=merged_config.get('max_iter_per_infer', 1),
-            use_memmap=merged_config.get('use_memmap', False),
-            memmap_dir=merged_config.get('memmap_dir', None),
-            verbose=merged_config.get('verbose', False),
-            figs_save_dir=merged_config.get('figs_save_dir', 'figs'),
-            correct_injection_offset=merged_config.get('correct_injection_offset', False)
+            design_radius=config["design_radius"],
+            G=config["G"],
+            f=config["f"],
+            use_thin_lens=config["use_thin_lens"],
+            L_quad=config["L_quad"],
+            L_straight=config["L_straight"],
+            p=config["p"],
+            q=config["q"],
+            n_turns=config["n_turns"],
+            total_dipole_bending_angle=config["total_dipole_bending_angle"],
+            num_particles=config["num_particles"],
+            n_FODO=config["n_FODO"],
+            L_dipole=config["L_dipole"],
+            n_Dipoles=config["n_Dipoles"],
+            mag_field_range=merged_config.get("mag_field_range", (0.5, 2.0)),
+            dipole_length_range=merged_config.get("dipole_length_range", (0.5, 5.0)),
+            horizontal_tune_range=merged_config.get(
+                "horizontal_tune_range", (0.2, 0.8)
+            ),
+            vertical_tune_range=merged_config.get("vertical_tune_range", (0.2, 0.8)),
+            use_gpu_torch=merged_config.get("use_gpu_torch", False),
+            use_gpu_numba=merged_config.get("use_gpu_numba", False),
+            max_iter_per_infer=merged_config.get("max_iter_per_infer", 1),
+            use_memmap=merged_config.get("use_memmap", False),
+            memmap_dir=merged_config.get("memmap_dir", None),
+            verbose=merged_config.get("verbose", False),
+            figs_save_dir=merged_config.get("figs_save_dir", "figs"),
+            correct_injection_offset=merged_config.get(
+                "correct_injection_offset", False
+            ),
+            k_errors=config.get("k_errors", None),
         )
-        
+
         if verbose:
             print(simulator.backend_uasge_msg)
             simulator.describe()
-            
+
         return simulator
 
-    def _run_single_simulation(self, config, merged_config, initial_states=None, verbose=True):
+    def _run_single_simulation(
+        self, config, merged_config, initial_states=None, verbose=True
+    ):
         """
         Helper method to run a single simulation with the given configuration.
-        
+
         Parameters:
             config (dict): Configuration dictionary for this simulation.
             merged_config (dict): Merged base and common parameters.
             initial_states (np.ndarray, optional): Initial particle states. If None, will be generated.
             verbose (bool): Whether to print verbose output.
-            
+
         Returns:
             tuple: (simulator, initial_states_used)
         """
         # Create simulator instance
         simulator = self._create_simulator(config, merged_config, verbose)
-        
+
         # Generate initial states if not provided
         if initial_states is None:
             # Extract initial condition ranges
-            x0_mean, x0_std = merged_config['x0_mean_std']
-            xp0_mean, xp0_std = merged_config['xp0_mean_std']
-            y0_mean, y0_std = merged_config['y0_mean_std']
-            yp0_mean, yp0_std = merged_config['yp0_mean_std']
-            
+            x0_mean, x0_std = merged_config["x0_mean_std"]
+            xp0_mean, xp0_std = merged_config["xp0_mean_std"]
+            y0_mean, y0_std = merged_config["y0_mean_std"]
+            yp0_mean, yp0_std = merged_config["yp0_mean_std"]
+
             # Generate initial_states based on the extracted ranges
-            if merged_config['particles_sampling_method'] in ['normal', 'circle_with_radius']:
-                if merged_config['particles_sampling_method'] == 'normal':
-                    x0s = self.generate_init_states(x0_mean, x0_std, size=merged_config['num_particles'])
-                    y0s = self.generate_init_states(y0_mean, y0_std, size=merged_config['num_particles'])
-                
-                elif merged_config['particles_sampling_method'] == 'circle_with_radius':
-                    radius = merged_config['sampling_circle_radius']
-                    x0s, y0s = self.generate_init_pos_radius(num_particles=merged_config['num_particles'])
-                
-                # X' Y' angles in radians                
+            if merged_config["particles_sampling_method"] in [
+                "normal",
+                "circle_with_radius",
+            ]:
+                if merged_config["particles_sampling_method"] == "normal":
+                    x0s = self.generate_init_states(
+                        x0_mean, x0_std, size=merged_config["num_particles"]
+                    )
+                    y0s = self.generate_init_states(
+                        y0_mean, y0_std, size=merged_config["num_particles"]
+                    )
+
+                elif merged_config["particles_sampling_method"] == "circle_with_radius":
+                    radius = merged_config["sampling_circle_radius"]
+                    x0s, y0s = self.generate_init_pos_radius(
+                        num_particles=merged_config["num_particles"]
+                    )
+
+                # X' Y' angles in radians
                 if xp0_mean == xp0_std == 0.0:
-                    xp0s = np.zeros(merged_config['num_particles'])
+                    xp0s = np.zeros(merged_config["num_particles"])
                 else:
-                    xp0s = self.generate_init_states(xp0_mean, xp0_std, size=merged_config['num_particles'])
-                
+                    xp0s = self.generate_init_states(
+                        xp0_mean, xp0_std, size=merged_config["num_particles"]
+                    )
+
                 if yp0_mean == yp0_std == 0.0:
-                    yp0s = np.zeros(merged_config['num_particles'])
+                    yp0s = np.zeros(merged_config["num_particles"])
                 else:
-                    yp0s = self.generate_init_states(yp0_mean, yp0_std, size=merged_config['num_particles'])
-                
+                    yp0s = self.generate_init_states(
+                        yp0_mean, yp0_std, size=merged_config["num_particles"]
+                    )
+
                 mean_x0s = np.mean(x0s)
                 mean_y0s = np.mean(y0s)
-                
+
                 initial_states = np.stack([x0s, xp0s, y0s, yp0s], axis=1)
                 self.initial_states = initial_states
-            
+
                 if verbose:
-                    print(f"init X and Y sampling method: {merged_config['particles_sampling_method']}")
+                    print(
+                        f"init X and Y sampling method: {merged_config['particles_sampling_method']}"
+                    )
                     print(f"init states mean_x0s={mean_x0s}, mean_y0s={mean_y0s}")
                     print("initial_states = ", initial_states)
-            
-            elif merged_config['particles_sampling_method'] == 'from_twiss_params':
-                alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = simulator.compute_twiss_parameters()
-                print(f'Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}')
-                initial_states = simulator.generate_initial_states_from_twiss(alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y, merged_config['num_particles'])                        
+
+            elif merged_config["particles_sampling_method"] == "from_twiss_params":
+                alpha_x, beta_x, epsilon_x, alpha_y, beta_y, epsilon_y = (
+                    simulator.compute_twiss_parameters()
+                )
+                print(
+                    f"Twiss parameters: \n alpha_x: {alpha_x}, beta_x: {beta_x}, epsilon_x: {epsilon_x}, \n alpha_y: {alpha_y}, beta_y: {beta_y}, epsilon_y: {epsilon_y}"
+                )
+                initial_states = simulator.generate_initial_states_from_twiss(
+                    alpha_x,
+                    beta_x,
+                    epsilon_x,
+                    alpha_y,
+                    beta_y,
+                    epsilon_y,
+                    merged_config["num_particles"],
+                )
                 self.initial_states = initial_states
 
         if verbose:
@@ -4243,14 +5082,16 @@ class SimulationRunner:
 
         # Run simulation
         simulator.simulate(initial_states)
-        
+
         return simulator, initial_states
 
-    def run_configurations(self, initial_states=None, draw_plots=True, verbose=True, run_no_error_sim=True):
+    def run_configurations(
+        self, initial_states=None, draw_plots=True, verbose=True, run_no_error_sim=True
+    ):
         """
         Runs simulations for each base configuration both without and with quadrupole errors,
         and generates comparison plots if errors are introduced.
-        
+
         Parameters:
             initial_states (np.ndarray, optional): Initial particle states. If None, will be generated.
             draw_plots (bool): Whether to generate comparison plots.
@@ -4262,104 +5103,131 @@ class SimulationRunner:
             # Base config overrides common parameters if keys overlap
             merged_config = {**self.common_parameters, **base_config}
 
-            config_name = merged_config.get('config_name', 'Unnamed Configuration')
+            config_name = merged_config.get("config_name", "Unnamed Configuration")
             if verbose:
-                print("\n" + "="*80)
+                print("\n" + "=" * 80)
                 print(f"Running {config_name}:")
-                print(f"  n_FODO={merged_config['n_FODO']}, design_radius={merged_config['design_radius']}m, "
+                print(
+                    f"  n_FODO={merged_config['n_FODO']}, design_radius={merged_config['design_radius']}m, "
                     f"f={merged_config['f']}m, L_quad={merged_config['L_quad']}m, "
-                    f"L_straight={merged_config['L_straight']}m")
-                print("="*80)
+                    f"L_straight={merged_config['L_straight']}m"
+                )
+                print("=" * 80)
 
             try:
                 # Create simulator without running simulation
-                simulator_no_error = self._create_simulator(merged_config, merged_config, verbose)
+                simulator_no_error = self._create_simulator(
+                    merged_config, merged_config, verbose
+                )
 
                 # Generate initial states if not provided
                 if initial_states is None:
-                    initial_states = self._generate_initial_states(merged_config, simulator_no_error, verbose)
-                
+                    initial_states = self._generate_initial_states(
+                        merged_config, simulator_no_error, verbose
+                    )
+
                 simulator_no_error = None
 
                 if verbose:
                     print("initial_states = ", initial_states)
-                
+
                 # --- Simulation Without Error (conditional) ---
                 if run_no_error_sim:
                     if verbose:
                         print(f"Creating simulator WITHOUT ERROR")
                     config_no_error = merged_config.copy()
-                    config_no_error['config_name'] = f"{config_name} - No Error"
-                    config_no_error['quad_errors'] = None  # Ensure no error is present
-                    config_no_error['quad_tilt_errors'] = None  # Ensure no error is present
-                    config_no_error['dipole_tilt_errors'] = None  # Ensure no error is present
+                    config_no_error["config_name"] = f"{config_name} - No Error"
+                    config_no_error["quad_errors"] = None  # Ensure no error is present
+                    config_no_error["quad_tilt_errors"] = (
+                        None  # Ensure no error is present
+                    )
+                    config_no_error["dipole_tilt_errors"] = (
+                        None  # Ensure no error is present
+                    )
 
                     # Run simulation
                     simulator_no_error.simulate(initial_states)
 
                     # Store the simulator instance
-                    self.simulators_no_error[config_no_error['config_name']] = simulator_no_error
+                    self.simulators_no_error[config_no_error["config_name"]] = (
+                        simulator_no_error
+                    )
 
                     if verbose:
                         print("==========" * 10)
-                
+
                 # --- Simulation With Error ---
-                quad_errors = merged_config.get('quad_errors', None)
-                dipole_tilt_errors = merged_config.get('dipole_tilt_errors', None)
-                quad_tilt_errors = merged_config.get('quad_tilt_errors', None)
-                
-                declared_errors_count = np.array([
-                    quad_errors is not None,
-                    dipole_tilt_errors is not None,
-                    quad_tilt_errors is not None,
-                ]).astype(int).sum()
-                
-                if self.common_parameters['reject_multiple_error_types'] and declared_errors_count > 1:
+                quad_errors = merged_config.get("quad_errors", None)
+                dipole_tilt_errors = merged_config.get("dipole_tilt_errors", None)
+                quad_tilt_errors = merged_config.get("quad_tilt_errors", None)
+
+                declared_errors_count = (
+                    np.array(
+                        [
+                            quad_errors is not None,
+                            dipole_tilt_errors is not None,
+                            quad_tilt_errors is not None,
+                        ]
+                    )
+                    .astype(int)
+                    .sum()
+                )
+
+                if (
+                    self.common_parameters["reject_multiple_error_types"]
+                    and declared_errors_count > 1
+                ):
                     print("[Error] multiple error types are not supported")
-                    raise Exception("Confguration contains multiple error types"
-                                    "Choose only one type of errors [`quad_errors` | `dipole_tilt_errors` | `quad_tilt_errors`]")
-                
+                    raise Exception(
+                        "Confguration contains multiple error types"
+                        "Choose only one type of errors [`quad_errors` | `dipole_tilt_errors` | `quad_tilt_errors`]"
+                    )
+
                 else:
                     config_with_error = merged_config.copy()
-                    config_with_error['config_name'] = f"{config_name} - With Error"
+                    config_with_error["config_name"] = f"{config_name} - With Error"
 
                     if verbose:
-                        print("\n" + "="*80)
+                        print("\n" + "=" * 80)
                         print(f"Running {config_with_error['config_name']}:")
-                        print(f"  n_FODO={config_with_error['n_FODO']}, design_radius={config_with_error['design_radius']}m, "
+                        print(
+                            f"  n_FODO={config_with_error['n_FODO']}, design_radius={config_with_error['design_radius']}m, "
                             f"f={config_with_error['f']}m, L_quad={config_with_error['L_quad']}m, "
-                            f"L_straight={config_with_error['L_straight']}m")
-                        print("="*80)
+                            f"L_straight={config_with_error['L_straight']}m"
+                        )
+                        print("=" * 80)
 
                     # Create simulator without running simulation
                     if verbose:
                         print(f"Creating simulator WITH ERROR")
-                    simulator_with_error = self._create_simulator(config_with_error, merged_config, verbose)
+                    simulator_with_error = self._create_simulator(
+                        config_with_error, merged_config, verbose
+                    )
 
                     if quad_errors:
                         # Introduce quadrupole misalignment errors
                         for quad_error in quad_errors:
                             simulator_with_error.set_quad_error(
-                                FODO_index=quad_error['FODO_index'],
-                                quad_type=quad_error['quad_type'],
-                                delta=quad_error['delta'],
-                                plane=quad_error['plane']
+                                FODO_index=quad_error["FODO_index"],
+                                quad_type=quad_error["quad_type"],
+                                delta=quad_error["delta"],
+                                plane=quad_error["plane"],
                             )
-                    
+
                     if dipole_tilt_errors:
-                        for dtilt_err_dict in base_config.get('dipole_tilt_errors', []):
+                        for dtilt_err_dict in base_config.get("dipole_tilt_errors", []):
                             simulator_with_error.set_dipole_tilt_error(
-                                dtilt_err_dict['FODO_index'],
-                                dtilt_err_dict['dipole_index'],
-                                dtilt_err_dict['tilt_angle']
+                                dtilt_err_dict["FODO_index"],
+                                dtilt_err_dict["dipole_index"],
+                                dtilt_err_dict["tilt_angle"],
                             )
-                    
+
                     if quad_tilt_errors:
-                        for qtilt_err_dict in base_config.get('quad_tilt_errors', []):
+                        for qtilt_err_dict in base_config.get("quad_tilt_errors", []):
                             simulator_with_error.set_quadrupole_tilt_error(
-                                qtilt_err_dict['FODO_index'],
-                                qtilt_err_dict['quad_type'],
-                                qtilt_err_dict['tilt_angle']
+                                qtilt_err_dict["FODO_index"],
+                                qtilt_err_dict["quad_type"],
+                                qtilt_err_dict["tilt_angle"],
                             )
 
                     # Rebuild lattice and recompute tunes after introducing errors
@@ -4373,7 +5241,9 @@ class SimulationRunner:
                     simulator_with_error.simulate(initial_states)
 
                     # Store the simulator instance
-                    self.simulators_with_error[config_with_error['config_name']] = simulator_with_error
+                    self.simulators_with_error[config_with_error["config_name"]] = (
+                        simulator_with_error
+                    )
 
                     if draw_plots and simulator_no_error is not None:
                         # --- Comparison Plots ---
@@ -4381,7 +5251,12 @@ class SimulationRunner:
                             print("\nGenerating Comparison Plots...")
                         # Specify the BPM (FODO cell) index you want to plot
                         cell_idx = 0  # Change this index as needed
-                        simulator_no_error.plot_bpm_comparison_last_images(simulator_no_error, simulator_with_error, cell_idx=cell_idx, particles='all_mean')
+                        simulator_no_error.plot_bpm_comparison_last_images(
+                            simulator_no_error,
+                            simulator_with_error,
+                            cell_idx=cell_idx,
+                            particles="all_mean",
+                        )
                         # simulator_no_error.plot_comparison(simulator_with_error, cell_idx=cell_idx, viz_start_idx=None,
                         #                      viz_end_idx=None, save_label="sim_test", window_size=50, plot_all=True, extra_title="All BPMs")
                         if verbose:
@@ -4395,13 +5270,17 @@ class SimulationRunner:
                     print(stack_trace)
 
             except RuntimeError as re:
-                print(f"Runtime error in configuration '{config_name}' with No Error simulation: {re}")
+                print(
+                    f"Runtime error in configuration '{config_name}' with No Error simulation: {re}"
+                )
                 print("Skipping this configuration.\n")
                 stack_trace = traceback.format_exc()
                 print(stack_trace)
 
             except Exception as e:
-                print(f"An unexpected error occurred in configuration '{config_name}': {e}")
+                print(
+                    f"An unexpected error occurred in configuration '{config_name}': {e}"
+                )
                 print("Skipping this configuration.\n")
                 stack_trace = traceback.format_exc()
                 print(stack_trace)
@@ -4413,12 +5292,12 @@ def test_cpu_gpu_consistency():
     """
     import torch
     from test_configs import config, other_config
-    
-    config['n_turns'] = 1000
-    config['num_particles'] = 100
-    config['max_iter_per_infer'] = 100 # used only for PyTorch
-    
-    all_config = {**config, **other_config}    
+
+    config["n_turns"] = 1000
+    config["num_particles"] = 100
+    config["max_iter_per_infer"] = 100  # used only for PyTorch
+
+    all_config = {**config, **other_config}
 
     print("=" * 80)
     print("Testing CPU vs GPU (Numba) vs GPU (PyTorch) Consistency")
@@ -4426,62 +5305,62 @@ def test_cpu_gpu_consistency():
 
     # Generate initial states
     np.random.seed(42)
-    initial_states = np.random.randn(config['num_particles'], 4) * 1e-4
-    
+    initial_states = np.random.randn(config["num_particles"], 4) * 1e-4
+
     # Test 1: CPU Simulation
     print("\n--- Running CPU Simulation ---")
     config_cpu = config.copy()
-    config_cpu['verbose'] = False
-    
+    config_cpu["verbose"] = False
+
     simulator_cpu = SynchrotronSimulator(**config_cpu)
     simulator_cpu.simulate(initial_states)
-    
+
     bpm_cpu = {
-        'x': simulator_cpu.bpm_readings['x'].copy(),
-        'y': simulator_cpu.bpm_readings['y'].copy(),
-        'xp': simulator_cpu.bpm_readings['xp'].copy(),
-        'yp': simulator_cpu.bpm_readings['yp'].copy(),
+        "x": simulator_cpu.bpm_readings["x"].copy(),
+        "y": simulator_cpu.bpm_readings["y"].copy(),
+        "xp": simulator_cpu.bpm_readings["xp"].copy(),
+        "yp": simulator_cpu.bpm_readings["yp"].copy(),
     }
     print(f"CPU simulation complete. BPM x shape: {bpm_cpu['x'].shape}")
-    
+
     # Test 2: Numba GPU Simulation
     print("\n--- Running Numba GPU Simulation ---")
     config_numba = config.copy()
-    config_numba['use_gpu_numba'] = True
-    config_numba['verbose'] = False
-    
+    config_numba["use_gpu_numba"] = True
+    config_numba["verbose"] = False
+
     try:
         simulator_numba = SynchrotronSimulator(**config_numba)
         simulator_numba.simulate(initial_states)
-        
+
         bpm_numba = {
-            'x': simulator_numba.bpm_readings['x'].copy(),
-            'y': simulator_numba.bpm_readings['y'].copy(),
-            'xp': simulator_numba.bpm_readings['xp'].copy(),
-            'yp': simulator_numba.bpm_readings['yp'].copy(),
+            "x": simulator_numba.bpm_readings["x"].copy(),
+            "y": simulator_numba.bpm_readings["y"].copy(),
+            "xp": simulator_numba.bpm_readings["xp"].copy(),
+            "yp": simulator_numba.bpm_readings["yp"].copy(),
         }
         print(f"Numba GPU simulation complete. BPM x shape: {bpm_numba['x'].shape}")
     except Exception as e:
         print(f"Numba GPU simulation failed: {e}")
         bpm_numba = None
-    
+
     # Test 3: PyTorch GPU Simulation
     print("\n--- Running PyTorch GPU Simulation ---")
     config_torch = config.copy()
-    config_torch['use_gpu_torch'] = True  # Use PyTorch GPU
-    config_torch['verbose'] = False
-    
+    config_torch["use_gpu_torch"] = True  # Use PyTorch GPU
+    config_torch["verbose"] = False
+
     simulator_torch = SynchrotronSimulator(**config_torch)
-    
+
     # Manually run PyTorch simulation
     try:
         simulator_torch._simulate_gpu_torch(initial_states)
-        
+
         bpm_torch = {
-            'x': simulator_torch.bpm_readings['x'].copy(),
-            'y': simulator_torch.bpm_readings['y'].copy(),
-            'xp': simulator_torch.bpm_readings['xp'].copy(),
-            'yp': simulator_torch.bpm_readings['yp'].copy(),
+            "x": simulator_torch.bpm_readings["x"].copy(),
+            "y": simulator_torch.bpm_readings["y"].copy(),
+            "xp": simulator_torch.bpm_readings["xp"].copy(),
+            "yp": simulator_torch.bpm_readings["yp"].copy(),
         }
         print(f"PyTorch GPU simulation complete. BPM x shape: {bpm_torch['x'].shape}")
     except Exception as e:
@@ -4490,127 +5369,125 @@ def test_cpu_gpu_consistency():
         bpm_torch = None
     finally:
         simulator_torch.cleanup_memmap()
-    
+
     # Compare results
     print("\n" + "=" * 80)
     print("Comparison Results")
     print("=" * 80)
-    
+
     if bpm_numba is not None:
         # Compare CPU vs Numba
-        max_diff_x = np.max(np.abs(bpm_cpu['x'] - bpm_numba['x']))
-        max_diff_y = np.max(np.abs(bpm_cpu['y'] - bpm_numba['y']))
-        mean_diff_x = np.mean(np.abs(bpm_cpu['x'] - bpm_numba['x']))
-        mean_diff_y = np.mean(np.abs(bpm_cpu['y'] - bpm_numba['y']))
-        
+        max_diff_x = np.max(np.abs(bpm_cpu["x"] - bpm_numba["x"]))
+        max_diff_y = np.max(np.abs(bpm_cpu["y"] - bpm_numba["y"]))
+        mean_diff_x = np.mean(np.abs(bpm_cpu["x"] - bpm_numba["x"]))
+        mean_diff_y = np.mean(np.abs(bpm_cpu["y"] - bpm_numba["y"]))
+
         print(f"\nCPU vs Numba GPU:")
         print(f"  Max |Δx|: {max_diff_x:.2e} m")
         print(f"  Max |Δy|: {max_diff_y:.2e} m")
         print(f"  Mean |Δx|: {mean_diff_x:.2e} m")
         print(f"  Mean |Δy|: {mean_diff_y:.2e} m")
-        
+
         tol = 5e-10
         if max_diff_x < tol and max_diff_y < tol:
             print("  ✓ CPU and Numba GPU results are consistent!")
         else:
             print("  ✗ WARNING: CPU and Numba GPU results differ!")
-    
+
     if bpm_torch is not None:
         # Compare CPU vs PyTorch
-        max_diff_x = np.max(np.abs(bpm_cpu['x'] - bpm_torch['x']))
-        max_diff_y = np.max(np.abs(bpm_cpu['y'] - bpm_torch['y']))
-        mean_diff_x = np.mean(np.abs(bpm_cpu['x'] - bpm_torch['x']))
-        mean_diff_y = np.mean(np.abs(bpm_cpu['y'] - bpm_torch['y']))
-        
+        max_diff_x = np.max(np.abs(bpm_cpu["x"] - bpm_torch["x"]))
+        max_diff_y = np.max(np.abs(bpm_cpu["y"] - bpm_torch["y"]))
+        mean_diff_x = np.mean(np.abs(bpm_cpu["x"] - bpm_torch["x"]))
+        mean_diff_y = np.mean(np.abs(bpm_cpu["y"] - bpm_torch["y"]))
+
         print(f"\nCPU vs PyTorch GPU:")
         print(f"  Max |Δx|: {max_diff_x:.2e} m")
         print(f"  Max |Δy|: {max_diff_y:.2e} m")
         print(f"  Mean |Δx|: {mean_diff_x:.2e} m")
         print(f"  Mean |Δy|: {mean_diff_y:.2e} m")
-        
+
         tol = 5e-10
         if max_diff_x < tol and max_diff_y < tol:
             print("  ✓ CPU and PyTorch GPU results are consistent!")
         else:
             print("  ✗ WARNING: CPU and PyTorch GPU results differ!")
-    
+
     if bpm_numba is not None and bpm_torch is not None:
         # Compare Numba vs PyTorch
-        max_diff_x = np.max(np.abs(bpm_numba['x'] - bpm_torch['x']))
-        max_diff_y = np.max(np.abs(bpm_numba['y'] - bpm_torch['y']))
-        mean_diff_x = np.mean(np.abs(bpm_numba['x'] - bpm_torch['x']))
-        mean_diff_y = np.mean(np.abs(bpm_numba['y'] - bpm_torch['y']))
-        
+        max_diff_x = np.max(np.abs(bpm_numba["x"] - bpm_torch["x"]))
+        max_diff_y = np.max(np.abs(bpm_numba["y"] - bpm_torch["y"]))
+        mean_diff_x = np.mean(np.abs(bpm_numba["x"] - bpm_torch["x"]))
+        mean_diff_y = np.mean(np.abs(bpm_numba["y"] - bpm_torch["y"]))
+
         print(f"\nNumba GPU vs PyTorch GPU:")
         print(f"  Max |Δx|: {max_diff_x:.2e} m")
         print(f"  Max |Δy|: {max_diff_y:.2e} m")
         print(f"  Mean |Δx|: {mean_diff_x:.2e} m")
         print(f"  Mean |Δy|: {mean_diff_y:.2e} m")
-        
+
         tol = 5e-10
         if max_diff_x < tol and max_diff_y < tol:
             print("  ✓ Numba GPU and PyTorch GPU results are consistent!")
         else:
             print("  ✗ WARNING: Numba GPU and PyTorch GPU results differ!")
-    
+
     # print std and mean for all BPM readings (cpu, numba, torch)
     print("\nBPM Readings Statistics:")
-    for backend, bpm in zip(['CPU', 'Numba GPU', 'PyTorch GPU'], [bpm_cpu, bpm_numba, bpm_torch]):
+    for backend, bpm in zip(
+        ["CPU", "Numba GPU", "PyTorch GPU"], [bpm_cpu, bpm_numba, bpm_torch]
+    ):
         if bpm is not None:
-            std_x = np.std(bpm['x'])
-            std_y = np.std(bpm['y'])
-            mean_x = np.mean(bpm['x'])
-            mean_y = np.mean(bpm['y'])
+            std_x = np.std(bpm["x"])
+            std_y = np.std(bpm["y"])
+            mean_x = np.mean(bpm["x"])
+            mean_y = np.mean(bpm["y"])
             print(f"  {backend}:")
             print(f"    - BPM x: mean={mean_x:.2e} m, std={std_x:.2e} m")
             print(f"    - BPM y: mean={mean_y:.2e} m, std={std_y:.2e} m")
-    
+
     print("\n" + "=" * 80)
     print("Test Complete")
     print("=" * 80)
-    
-    return {
-        'cpu': bpm_cpu,
-        'numba': bpm_numba,
-        'torch': bpm_torch
-    }
+
+    return {"cpu": bpm_cpu, "numba": bpm_numba, "torch": bpm_torch}
 
 
 def benchmark_simulation_speed(n_runs=3):
     """
     Benchmark the speed of CPU, Numba GPU, and PyTorch GPU simulations.
-    
+
     Parameters:
         n_runs (int): Number of runs to average over for timing.
-    
+
     Returns:
         dict: Dictionary containing timing results for each backend.
     """
     from test_configs import config, other_config
     import torch
     import time
-    
+
     print("=" * 80)
     print("Simulation Speed Benchmark")
     print("=" * 80)
-    
-    config['n_turns'] = 6000
-    config['num_particles'] = 6000
-    config['max_iter_per_infer'] = 1000 # used only for PyTorch
-    
+
+    config["n_turns"] = 6000
+    config["num_particles"] = 6000
+    config["max_iter_per_infer"] = 1000  # used only for PyTorch
+
     # Configuration parameters - use more turns and particles for meaningful benchmark
     all_config = {**config, **other_config}
-    
+
     # Generate initial states
     np.random.seed(42)
-    initial_states = np.random.randn(all_config['num_particles'], 4) * 1e-4
-    
+    initial_states = np.random.randn(all_config["num_particles"], 4) * 1e-4
+
     results = {}
-    
+
     # # Test 1: CPU Simulation
     # print("\n--- Benchmarking CPU Simulation ---")
     # config_cpu = config.copy()
-    
+
     # cpu_times = []
     # for run in range(n_runs):
     #     start_time = time.time()
@@ -4619,7 +5496,7 @@ def benchmark_simulation_speed(n_runs=3):
     #     elapsed = time.time() - start_time
     #     cpu_times.append(elapsed)
     #     print(f"  Run {run+1}/{n_runs}: {elapsed:.3f} seconds")
-    
+
     # avg_cpu_time = np.mean(cpu_times)
     # std_cpu_time = np.std(cpu_times)
     # results['cpu'] = {
@@ -4628,12 +5505,12 @@ def benchmark_simulation_speed(n_runs=3):
     #     'all_times': cpu_times
     # }
     # print(f"  Average: {avg_cpu_time:.3f} ± {std_cpu_time:.3f} seconds")
-    
+
     # Test 2: Numba GPU Simulation
     print("\n--- Benchmarking Numba GPU Simulation ---")
     config_numba = config.copy()
-    config_numba['use_gpu_numba'] = True
-    
+    config_numba["use_gpu_numba"] = True
+
     numba_times = []
     try:
         for run in range(n_runs):
@@ -4642,26 +5519,26 @@ def benchmark_simulation_speed(n_runs=3):
             simulator_numba.simulate(initial_states)
             elapsed = time.time() - start_time
             numba_times.append(elapsed)
-            print(f"  Run {run+1}/{n_runs}: {elapsed:.3f} seconds")
-        
+            print(f"  Run {run + 1}/{n_runs}: {elapsed:.3f} seconds")
+
         avg_numba_time = np.mean(numba_times)
         std_numba_time = np.std(numba_times)
-        results['numba_gpu'] = {
-            'avg_time': avg_numba_time,
-            'std_time': std_numba_time,
-            'all_times': numba_times
+        results["numba_gpu"] = {
+            "avg_time": avg_numba_time,
+            "std_time": std_numba_time,
+            "all_times": numba_times,
         }
         print(f"  Average: {avg_numba_time:.3f} ± {std_numba_time:.3f} seconds")
     except Exception as e:
         print(f"  Numba GPU simulation failed: {e}")
         traceback.print_exc()
-        results['numba_gpu'] = None
-    
+        results["numba_gpu"] = None
+
     # Test 3: PyTorch GPU Simulation
     print("\n--- Benchmarking PyTorch GPU Simulation ---")
     config_torch = config.copy()
-    config_torch['use_gpu_torch'] = True
-    
+    config_torch["use_gpu_torch"] = True
+
     torch_times = []
     try:
         for run in range(n_runs):
@@ -4670,63 +5547,72 @@ def benchmark_simulation_speed(n_runs=3):
             simulator_torch._simulate_gpu_torch(initial_states)
             elapsed = time.time() - start_time
             torch_times.append(elapsed)
-            print(f"  Run {run+1}/{n_runs}: {elapsed:.3f} seconds")
-        
+            print(f"  Run {run + 1}/{n_runs}: {elapsed:.3f} seconds")
+
         avg_torch_time = np.mean(torch_times)
         std_torch_time = np.std(torch_times)
-        results['torch_gpu'] = {
-            'avg_time': avg_torch_time,
-            'std_time': std_torch_time,
-            'all_times': torch_times
+        results["torch_gpu"] = {
+            "avg_time": avg_torch_time,
+            "std_time": std_torch_time,
+            "all_times": torch_times,
         }
         print(f"  Average: {avg_torch_time:.3f} ± {std_torch_time:.3f} seconds")
     except Exception as e:
         print(f"  PyTorch GPU simulation failed: {e}")
         traceback.print_exc()
-        results['torch_gpu'] = None
+        results["torch_gpu"] = None
     finally:
         print("\nCleaning up PyTorch GPU resources...")
         simulator_torch.cleanup_memmap()
-    
+
     # Summary
     print("\n" + "=" * 80)
     print("Benchmark Summary")
     print("=" * 80)
-    
+
     print(f"\nConfiguration:")
     print(f"  - Turns: {all_config['n_turns']}")
     print(f"  - Particles: {all_config['num_particles']}")
     print(f"  - FODO Cells: {all_config['n_FODO']}")
     print(f"  - Runs averaged: {n_runs}")
-    
+
     print(f"\nTiming Results:")
-    if results.get('cpu') is not None:
-        print(f"  CPU:         {results['cpu']['avg_time']:.3f} ± {results['cpu']['std_time']:.3f} seconds")
-    
-    if results.get('numba_gpu') is not None:
-        if results.get('cpu') is not None:
-            speedup_cpu_numba = results['cpu']['avg_time'] / results['numba_gpu']['avg_time']
+    if results.get("cpu") is not None:
+        print(
+            f"  CPU:         {results['cpu']['avg_time']:.3f} ± {results['cpu']['std_time']:.3f} seconds"
+        )
+
+    if results.get("numba_gpu") is not None:
+        if results.get("cpu") is not None:
+            speedup_cpu_numba = (
+                results["cpu"]["avg_time"] / results["numba_gpu"]["avg_time"]
+            )
         else:
-            speedup_cpu_numba = float('nan')
-        print(f"  Numba GPU:   {results['numba_gpu']['avg_time']:.3f} ± {results['numba_gpu']['std_time']:.3f} seconds (Speedup vs cpu: {speedup_cpu_numba:.2f}x)")
+            speedup_cpu_numba = float("nan")
+        print(
+            f"  Numba GPU:   {results['numba_gpu']['avg_time']:.3f} ± {results['numba_gpu']['std_time']:.3f} seconds (Speedup vs cpu: {speedup_cpu_numba:.2f}x)"
+        )
     else:
         print(f"  Numba GPU:   FAILED")
-    
-    if results.get('torch_gpu') is not None:
-        if results.get('cpu') is not None:
-            speedup_cpu_torch = results['cpu']['avg_time'] / results['torch_gpu']['avg_time']
+
+    if results.get("torch_gpu") is not None:
+        if results.get("cpu") is not None:
+            speedup_cpu_torch = (
+                results["cpu"]["avg_time"] / results["torch_gpu"]["avg_time"]
+            )
         else:
-            speedup_cpu_torch = float('nan')
-        print(f"  PyTorch GPU: {results['torch_gpu']['avg_time']:.3f} ± {results['torch_gpu']['std_time']:.3f} seconds (Speedup vs cpu: {speedup_cpu_torch:.2f}x)")
+            speedup_cpu_torch = float("nan")
+        print(
+            f"  PyTorch GPU: {results['torch_gpu']['avg_time']:.3f} ± {results['torch_gpu']['std_time']:.3f} seconds (Speedup vs cpu: {speedup_cpu_torch:.2f}x)"
+        )
     else:
         print(f"  PyTorch GPU: FAILED")
-    
+
     print("\n" + "=" * 80)
-    
+
     return results
 
 
 # Run the benchmark
 if __name__ == "__main__":
     benchmark_simulation_speed()
-

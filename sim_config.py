@@ -4,19 +4,19 @@ import os
 import numpy as np
 from datetime import datetime
 
-EXPS_FOLDER = 'exps'
-TAG = 'test'
+EXPS_FOLDER = "exps"
+TAG = "test"
 
-SHOW_PLOTS = False
+SHOW_PLOTS = True
 
 # Create a directory for the experiment session with the current date and time
-timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-RUN_TAG = f'{EXPS_FOLDER}/{TAG}/run_{timestamp}'
+RUN_TAG = f"{EXPS_FOLDER}/{TAG}/run_{timestamp}"
 
-SAVE_DIR_FIGS = f'{RUN_TAG}/figs'
-SAVE_DIR_TRAINING = f'{RUN_TAG}/training'
-SAVE_DIR_BENCHMARKS = f'{RUN_TAG}/benchmarks'
+SAVE_DIR_FIGS = f"{RUN_TAG}/figs"
+SAVE_DIR_TRAINING = f"{RUN_TAG}/training"
+SAVE_DIR_BENCHMARKS = f"{RUN_TAG}/benchmarks"
 
 for dir in [SAVE_DIR_FIGS, SAVE_DIR_TRAINING, SAVE_DIR_BENCHMARKS]:
     print("--->Creating save directory:", dir)
@@ -26,17 +26,15 @@ for dir in [SAVE_DIR_FIGS, SAVE_DIR_TRAINING, SAVE_DIR_BENCHMARKS]:
 # Define base simulation configurations with embedded quadrupole errors
 base_configurations = [
     {
-        'config_name': 'Configuration 1',
-        'design_radius': 20.0,    # meters
-        'n_FODO': 8,
-        'f': 15,                 # meters
-        'L_quad': 0.4,             # meters
+        "config_name": "Configuration 1",
+        "design_radius": 20.0,  # meters
+        "n_FODO": 8,
+        "f": 15,  # meters
+        "L_quad": 0.4,  # meters
         # 'L_straight': 1,         # meters
         # 'total_dipole_bending_angle': (2 * np.pi),#(3 / 3) * np.pi,
-
         # 'quad_errors': None,
-
-        'quad_errors': [
+        "quad_errors": [
             # {
             #     'FODO_index': 0,
             #     'quad_type': 'defocusing',
@@ -44,34 +42,34 @@ base_configurations = [
             #     'plane': 'vertical'  # 'horizontal' or 'vertical'
             # },
             {
-                'FODO_index': 1,
-                'quad_type': 'defocusing',
-                'delta': 1e-6,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
+                "FODO_index": 1,
+                "quad_type": "defocusing",
+                "delta": 1e-6,
+                "plane": "vertical",  # 'horizontal' or 'vertical'
             },
             {
-                'FODO_index': 2,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
+                "FODO_index": 2,
+                "quad_type": "defocusing",
+                "delta": 1e-7,
+                "plane": "vertical",  # 'horizontal' or 'vertical'
             },
             {
-                'FODO_index': 3,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
+                "FODO_index": 3,
+                "quad_type": "defocusing",
+                "delta": 1e-7,
+                "plane": "vertical",  # 'horizontal' or 'vertical'
             },
             {
-                'FODO_index': 4,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
+                "FODO_index": 4,
+                "quad_type": "defocusing",
+                "delta": 1e-7,
+                "plane": "vertical",  # 'horizontal' or 'vertical'
             },
             {
-                'FODO_index': 5,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
+                "FODO_index": 5,
+                "quad_type": "defocusing",
+                "delta": 1e-7,
+                "plane": "vertical",  # 'horizontal' or 'vertical'
             },
             # {
             #     'FODO_index': 6,
@@ -80,34 +78,43 @@ base_configurations = [
             #     'plane': 'vertical'  # 'horizontal' or 'vertical'
             # },
             {
-                'FODO_index': 7,
-                'quad_type': 'defocusing',
-                'delta': 1e-7,
-                'plane': 'vertical'  # 'horizontal' or 'vertical'
+                "FODO_index": 7,
+                "quad_type": "defocusing",
+                "delta": 1e-7,
+                "plane": "vertical",  # 'horizontal' or 'vertical'
             },
         ],
-
-        "quad_tilt_errors": None,
-        
-        # 'quad_tilt_errors': [
-        #     {
-        #         'FODO_index': 1,
-        #         'quad_type': 'defocusing',
-        #         'tilt_angle': 0.0005
-        #     },
-        #     {
-        #         'FODO_index': 3,
-        #         'quad_type': 'defocusing',
-        #         'tilt_angle': 0.0005
-        #     },
-        #     {
-        #         'FODO_index': 6,
-        #         'quad_type': 'defocusing',
-        #         'tilt_angle': 0.0005
-        #     },   
-        # ],
-
-        'dipole_tilt_errors': None,
+        # "k_errors": None,
+        "k_errors": {
+            "enabled": True,
+            "k_systemic_drift_fraction_range": (0.04, 0.04),
+            "k_stochastic_jitter_fraction_range": (0.005, 0.01),
+            "k_error_cells": [
+                {"FODO_index": 0, "quad_type": "focusing"},
+                {"FODO_index": 0, "quad_type": "defocusing"},
+                {"FODO_index": 1, "quad_type": "focusing"},
+                {"FODO_index": 1, "quad_type": "defocusing"},
+                {"FODO_index": 2, "quad_type": "focusing"},
+                {"FODO_index": 2, "quad_type": "defocusing"},
+                {"FODO_index": 3, "quad_type": "focusing"},
+                {"FODO_index": 3, "quad_type": "defocusing"},
+                {"FODO_index": 4, "quad_type": "focusing"},
+                {"FODO_index": 4, "quad_type": "defocusing"},
+                {"FODO_index": 5, "quad_type": "focusing"},
+                {"FODO_index": 5, "quad_type": "defocusing"},
+                {"FODO_index": 6, "quad_type": "focusing"},
+                {"FODO_index": 6, "quad_type": "defocusing"},
+                {"FODO_index": 7, "quad_type": "focusing"},
+                {"FODO_index": 7, "quad_type": "defocusing"},
+            ],
+        },
+        # "quad_tilt_errors": None,
+        "quad_tilt_errors": [
+            {"FODO_index": 1, "quad_type": "defocusing", "tilt_angle": 0.0005},
+            {"FODO_index": 3, "quad_type": "defocusing", "tilt_angle": 0.0005},
+            {"FODO_index": 6, "quad_type": "defocusing", "tilt_angle": 0.0005},
+        ],
+        "dipole_tilt_errors": None,
         # 'dipole_tilt_errors': [
         #     {
         #         'FODO_index': 0,
@@ -125,64 +132,60 @@ base_configurations = [
         #         'tilt_angle': 0.005
         #     }
         # ],
-
     },
 ]
 
 
-
 common_parameters = {
-    'p': 5.344286e-19,                # Momentum in kg m/s (p_GeV_c=0.7)
-    'G': 1.0,                         # Tesla/meter
-    'q': 1.602e-19,                   # Proton charge in Coulombs
-    'n_turns': 6000,                   # Number of revolutions to simulate
-    'num_particles': 3000,             # Number of particles to simulate
-    'window_size': 0,                # Average window size for moving averages
-    'use_thin_lens': True,
+    "p": 5.344286e-19,  # Momentum in kg m/s (p_GeV_c=0.7)
+    "G": 1.0,  # Tesla/meter
+    "q": 1.602e-19,  # Proton charge in Coulombs
+    "n_turns": 6000,  # Number of revolutions to simulate
+    "num_particles": 300,  # Number of particles to simulate
+    "window_size": 0,  # Average window size for moving averages
+    "use_thin_lens": True,
     # Uniform - Initial conditions ranges as tuples
-    'x0_mean_std': (0.0, 0.05),      # meters
-    'xp0_mean_std': (0.0, 0.00),  # radians
-    'y0_mean_std': (0.0, 0.05),      # meters
-    'yp0_mean_std': (0.0, 0.00),  # radians
-    'particles_sampling_method': 'from_twiss_params', # from_twiss_params | circle_with_radius | normal
-    'correct_injection_offset': False,
-    'sampling_circle_radius': 0.01, #meters,
+    "x0_mean_std": (0.0, 0.05),  # meters
+    "xp0_mean_std": (0.0, 0.00),  # radians
+    "y0_mean_std": (0.0, 0.05),  # meters
+    "yp0_mean_std": (0.0, 0.00),  # radians
+    "particles_sampling_method": "from_twiss_params",  # from_twiss_params | circle_with_radius | normal
+    "correct_injection_offset": False,
+    "sampling_circle_radius": 0.01,  # meters,
     # Acceptable ranges config params
-    'mag_field_range': [0.1, 2.0],           # Tesla
-    'dipole_length_range': [0.2, 14.0],       # meters
-    'horizontal_tune_range': [0.1, 0.8],     # Tune
-    'vertical_tune_range': [0.1, 0.8],        # Tune
-    'total_dipole_bending_angle_range': (1.5 * np.pi, 2 * np.pi),
+    "mag_field_range": [0.1, 2.0],  # Tesla
+    "dipole_length_range": [0.2, 14.0],  # meters
+    "horizontal_tune_range": [0.1, 0.8],  # Tune
+    "vertical_tune_range": [0.1, 0.8],  # Tune
+    "total_dipole_bending_angle_range": (1.5 * np.pi, 2 * np.pi),
     # Use cuda GPU kernels to accelerate simulation
-    'use_gpu_torch': True,
-    'max_iter_per_infer': 1000, # Max number of iterations per inference step (for PyTorch GPU simulation)
+    "use_gpu_torch": True,
+    "max_iter_per_infer": 2000,  # Max number of iterations per inference step (for PyTorch GPU simulation)
     # Log
-    'verbose': True,
+    "verbose": True,
     # BPM readings log criterion
     # record_full_revolution. By default records for cell_idx=0
     # 'record_full_revolution': False,
     # enable storing BPM readings for all BPMs after each full revolution relative to each BPM
     # requires to set record_full_revolution to `True`
     # 'record_full_revolution_per_bpm': False,
-    
-    'figs_save_dir': f'{SAVE_DIR_FIGS}',
-    
+    "figs_save_dir": f"{SAVE_DIR_FIGS}",
     # Parameters for generate_data
-    'target_data': 'quad_misalign_deltas',  # ['quad_misalign_deltas', 'quad_tilt_angles', 'dipole_tilt_angles']
-    'reject_multiple_error_types': False,
-    'start_rev': 5900, # should be <= n_turns
-    'end_rev': 6000, # should be > start_rev && <= n_turns
-    'apply_avg': False,
-    'include_no_error_data': False,
-    'fodo_cell_indices': [0, 1, 2, 3, 4, 5, 6, 7],  # Indices of BPMs to consider
-    'planes': ['x', 'y'],
-    'random_criterion': 'normal', # uniform | normal
+    "target_data": "quad_misalign_deltas",  # ['quad_misalign_deltas', 'quad_tilt_angles', 'dipole_tilt_angles']
+    "reject_multiple_error_types": False,
+    "start_rev": 5900,  # should be <= n_turns
+    "end_rev": 6000,  # should be > start_rev && <= n_turns
+    "apply_avg": False,
+    "include_no_error_data": False,
+    "fodo_cell_indices": [0, 1, 2, 3, 4, 5, 6, 7],  # Indices of BPMs to consider
+    "planes": ["x", "y"],
+    "random_criterion": "normal",  # uniform | normal
     # if 'random_criterion' is 'uniform'
-        # then >> _range is (low, high)
+    # then >> _range is (low, high)
     # if 'random_criterion' is 'normal'
-        # then >> _range is (mean, std)
-    'delta_range': (0, 5e-5),
-    'quad_tilt_angle_range': (0, 0.010), # 10 mrad (1e-3 = 1 mrad)
-    'dipole_tilt_angle_range': (0, 0.05), # 50 mrad
-    'com_delta_range': (-5e-05, 5e-05),
+    # then >> _range is (mean, std)
+    "delta_range": (0, 5e-5),
+    "quad_tilt_angle_range": (0, 0.010),  # 10 mrad (1e-3 = 1 mrad)
+    "dipole_tilt_angle_range": (0, 0.05),  # 50 mrad
+    "com_delta_range": (-5e-05, 5e-05),
 }
