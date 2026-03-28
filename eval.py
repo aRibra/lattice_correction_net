@@ -14,9 +14,32 @@ from constants import Constants as C
 from visualization import plot_benchmark_stats
 from utils import convert_defaultdict_to_dict, deserialize_minmax_scaler
 
-from synchrotron_simulator_gpu_Dataset_4D import SimulationRunner
+from synchrotron_simulator_gpu_Dataset_4D import SimulationRunner, SynchrotronSimulator
 from automate_dataset_collection import SimulationDataset
 from sim_config import SAVE_DIR_BENCHMARKS, SAVE_DIR_FIGS
+
+
+def _check_for_nan_inf(data):
+    """Check if any BPM reading contains NaN or infinity."""
+    if isinstance(data, dict):
+        for key in data:
+            if np.any(np.isnan(data[key])) or np.any(np.isinf(data[key])):
+                return True
+    return False
+
+
+def _regenerate_k_errors_config(k_errors_config):
+    """Regenerate k_errors config with new random k_delta."""
+    drift_range = k_errors_config["k_systemic_drift_fraction_range"]
+    k_delta = np.random.uniform(drift_range[0], drift_range[1])
+    return {
+        "enabled": True,
+        "k_systemic_drift_fraction_range": (k_delta, k_delta),
+        "k_stochastic_jitter_fraction_range": k_errors_config[
+            "k_stochastic_jitter_fraction_range"
+        ],
+        "k_error_cells": k_errors_config["k_error_cells"],
+    }
 
 
 def inference_on_validation_data(model, val_loader, dataset_scalers, merged_config):
@@ -329,6 +352,7 @@ def _run_evaluation(
     quad_tilt_range=(0.01, 0.05),
     include_bpm_noise=False,
     bpm_noise_range=(0, 100e-6),
+    max_retries=5,
 ):
     """
     Common evaluation function that runs the simulation, applies noise if specified,
@@ -490,25 +514,80 @@ def _run_evaluation(
     if verbose:
         print("evaluate_model()/ base_configurations: ", eval_config)
 
-    # * Simulate without error (baseline) + after applying the error
-    sim_runner = SimulationRunner(
-        base_configurations=[eval_config], common_parameters=common_parameters
-    )
+    common_parameters["horizontal_tune_range"] = [0.01, 2]
+    common_parameters["vertical_tune_range"] = [0.01, 2]
 
-    initial_states = None
+    # Retry loop for numerical stability issues with k_errors
+    for retry_attempt in range(max_retries):
+        simulation_failed = False
+        initial_states = None
 
-    sim_runner.run_configurations(
-        draw_plots=False, verbose=verbose, initial_states=initial_states, run_no_error_sim=False
-    )
+        # * Generate initial states using a temporary runner
+        # Note: run_configurations has a bug where simulator_no_error = None is set
+        # unconditionally before the no-error simulation runs, causing failures.
+        # We work around this by generating initial_states separately and using
+        # run_no_error_sim=False for the actual simulation.
+        temp_runner = SimulationRunner(
+            base_configurations=[eval_config], common_parameters=common_parameters
+        )
+        try:
+            temp_runner.run_configurations(
+                draw_plots=False, verbose=False, run_no_error_sim=True
+            )
+            initial_states = temp_runner.initial_states
+        except Exception:
+            initial_states = None
 
-    initial_states = sim_runner.initial_states
+        # * Run the simulation with errors
+        sim_runner = SimulationRunner(
+            base_configurations=[eval_config], common_parameters=common_parameters
+        )
 
-    simulator_no_error = sim_runner.simulators_no_error.get(
-        f"{eval_config['config_name']} - No Error"
-    )
-    simulator_with_error = sim_runner.simulators_with_error.get(
-        f"{eval_config['config_name']} - With Error"
-    )
+        # Use run_no_error_sim=False to avoid the bug where simulator_no_error = None
+        # is set unconditionally before the no-error simulation runs
+        try:
+            sim_runner.run_configurations(
+                draw_plots=False,
+                verbose=verbose,
+                initial_states=initial_states,
+                run_no_error_sim=False,
+            )
+        except Exception as e:
+            if verbose:
+                print(f"Warning: run_configurations failed: {e}")
+            simulation_failed = True
+
+        initial_states = sim_runner.initial_states
+
+        # When run_no_error_sim=False, simulators_no_error will be empty
+        simulator_no_error = None
+        simulator_with_error = sim_runner.simulators_with_error.get(
+            f"{eval_config['config_name']} - With Error"
+        )
+
+        # Check for NaN/inf in BPM readings
+        if (
+            simulator_with_error is not None
+            and simulator_with_error.bpm_readings is not None
+        ):
+            if _check_for_nan_inf(simulator_with_error.bpm_readings):
+                if verbose:
+                    print(
+                        f"NaN/inf detected in BPM readings (attempt {retry_attempt + 1}/{max_retries}), retrying with new k values..."
+                    )
+                simulation_failed = True
+
+        if simulation_failed:
+            if retry_attempt < max_retries - 1:
+                # Regenerate k_errors with new random k_delta
+                if k_errors_config is not None:
+                    k_errors_config = _regenerate_k_errors_config(k_errors_config)
+                    eval_config["k_errors"] = k_errors_config
+                continue  # Retry
+            else:
+                raise ValueError(
+                    f"Simulation failed after {max_retries} attempts due to numerical instability"
+                )
 
     # * The initial_states are the same in both simulations
 
@@ -566,11 +645,31 @@ def _run_evaluation(
     #                 print(f"  Applied {noise_level*1e6:.1f}μm shift to {axis}-axis")
 
     # Create SimulationDataset instance
+    # Use simulator_no_error if available (from run_no_error_sim=True), otherwise use simulator_with_error
+    bpm_readings_no_error = (
+        simulator_no_error.bpm_readings if simulator_no_error is not None else None
+    )
+    bpm_positions = (
+        simulator_no_error.bpm_positions
+        if simulator_no_error is not None
+        else simulator_with_error.bpm_positions
+    )
+    n_turns = (
+        simulator_no_error.n_turns
+        if simulator_no_error is not None
+        else simulator_with_error.n_turns
+    )
+    n_FODO = (
+        simulator_no_error.n_FODO
+        if simulator_no_error is not None
+        else simulator_with_error.n_FODO
+    )
+
     simulation_dataset = SimulationDataset(
         merged_config=merged_config,
-        bpm_readings_no_error=simulator_no_error.bpm_readings,
+        bpm_readings_no_error=bpm_readings_no_error,
         bpm_readings_with_error=simulator_with_error.bpm_readings,
-        bpm_positions=simulator_no_error.bpm_positions,
+        bpm_positions=bpm_positions,
         quadrupole_errors=simulator_with_error.quad_errors,
         quadrupole_tilt_errors=simulator_with_error.quadrupole_tilt_errors,
         dipole_tilt_errors=simulator_with_error.dipole_tilt_errors,
@@ -579,10 +678,8 @@ def _run_evaluation(
 
     # Generate data using the same parameters as during training
     start_rev = common_parameters.get("start_rev", 0)
-    end_rev = common_parameters.get("end_rev", simulator_no_error.n_turns)
-    fodo_cell_indices = common_parameters.get(
-        "fodo_cell_indices", list(range(simulator_no_error.n_FODO))
-    )
+    end_rev = common_parameters.get("end_rev", n_turns)
+    fodo_cell_indices = common_parameters.get("fodo_cell_indices", list(range(n_FODO)))
     planes = common_parameters.get("planes", ["x", "y"])
 
     if verbose:
@@ -710,6 +807,9 @@ def _run_evaluation(
             eval_config_corrected[target_errors_key][cord_ix]["delta"] = cord
             if verbose:
                 print(cord_ix, cord)
+
+    common_parameters["horizontal_tune_range"] = [0.01, 2]
+    common_parameters["vertical_tune_range"] = [0.01, 2]
 
     runner_corrected = SimulationRunner(
         base_configurations=[eval_config_corrected], common_parameters=common_parameters
@@ -1276,9 +1376,11 @@ def main_evaluation_block(
     if CANCEL_TILT_ERROR and CANCEL_MISALIGN_ERROR:
         common_parameters["target_data"] = False
 
-    # Insert k_errors into base_configurations if enabled
+    # Insert k_errors into base_configurations if enabled, otherwise disable k_errors
     if k_errors_config is not None:
         base_configurations[0]["k_errors"] = k_errors_config
+    else:
+        base_configurations[0]["k_errors"] = None
 
     # common_parameters['num_particles'] = 10
 

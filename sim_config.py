@@ -155,8 +155,8 @@ common_parameters = {
     # Acceptable ranges config params
     "mag_field_range": [0.1, 2.0],  # Tesla
     "dipole_length_range": [0.2, 14.0],  # meters
-    "horizontal_tune_range": [0.1, 0.8],  # Tune
-    "vertical_tune_range": [0.1, 0.8],  # Tune
+    "horizontal_tune_range": [0.01, 2],  # Tune
+    "vertical_tune_range": [0.01, 2],  # Tune
     "total_dipole_bending_angle_range": (1.5 * np.pi, 2 * np.pi),
     # Use cuda GPU kernels to accelerate simulation
     "use_gpu_torch": True,
