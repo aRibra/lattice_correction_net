@@ -1146,6 +1146,7 @@ class SynchrotronSimulator:
                     # define a small function to build that 4x4 "kick."
 
                     for quad_err in self.quad_errors:
+                        
                         if (
                             quad_err.FODO_index == cell_index
                             and quad_err.quad_type == quad_type_str
@@ -1248,8 +1249,7 @@ class SynchrotronSimulator:
         # 1) Build the one-turn 4x4
         M_ring_4x4 = np.identity(4)
         for M_elem in self.M_lattice_4x4:
-            # M_ring_4x4 = M_elem @ M_ring_4x4
-            M_ring_4x4 = M_ring_4x4 @ M_elem
+            M_ring_4x4 = M_elem @ M_ring_4x4
 
         # 2) Extract horizontal sub-block Mx (2x2), vertical sub-block My (2x2)
         Mx = M_ring_4x4[0:2, 0:2]
@@ -1380,6 +1380,151 @@ class SynchrotronSimulator:
                 print(
                     f"Warning: M_lattice_4x4[{idx}] has determinant={detM:.6f}, not ~1.0 => possibly non-symplectic."
                 )
+
+    def compute_response_matrix_y(self, quad_errors_cfg=None, device='cpu'):
+        """
+        Computes the analytical vertical orbit response matrix R_y (BPMs x Quads).
+        This uses exact element-by-element Courant-Snyder Twiss propagation.
+        """
+        if not getattr(self, "M_lattice_4x4", None):
+            raise ValueError("Lattice not built. Call build_lattice() first.")
+
+        n_elem = len(self.M_lattice_4x4)
+        n_BPMs = self.n_FODO
+
+        # 1. Calculate one-turn vertical matrix (Forward Matrix Accumulation)
+        My_ring = np.identity(2)
+        for M_elem in self.M_lattice_4x4:
+            My = M_elem[2:4, 2:4]
+            My_ring = My @ My_ring  # Correct forward transport: X_end = M_n @ ... @ M_1 @ X_0
+            
+        m11, m12, m21, m22 = My_ring[0, 0], My_ring[0, 1], My_ring[1, 0], My_ring[1, 1]
+        cos_mu_y = np.clip((m11 + m22) / 2.0, -1.0, 1.0)
+        mu_y = np.arccos(cos_mu_y)
+        
+        # Adjust branch if phase advance crosses pi
+        if m12 < 0:
+            mu_y = 2 * np.pi - mu_y
+            
+        sin_mu_y = np.sin(mu_y)
+        if abs(sin_mu_y) < 1e-12:
+            raise ValueError("Lattice is unstable or sin(mu_y) ~ 0.")
+            
+        nu_y = mu_y / (2.0 * np.pi)
+        beta0_y = m12 / sin_mu_y
+        alpha0_y = (m11 - m22) / (2.0 * sin_mu_y)
+
+        # 2. Propagate Twiss parameters through every element
+        betas_y = np.zeros(n_elem + 1)
+        alphas_y = np.zeros(n_elem + 1)
+        phases_y = np.zeros(n_elem + 1)
+        
+        betas_y[0] = beta0_y
+        alphas_y[0] = alpha0_y
+        phases_y[0] = 0.0
+        
+        for i, M_elem in enumerate(self.M_lattice_4x4):
+            My = M_elem[2:4, 2:4]
+            a, b, c, d = My[0,0], My[0,1], My[1,0], My[1,1]
+            
+            beta_in = betas_y[i]
+            alpha_in = alphas_y[i]
+            gamma_in = (1.0 + alpha_in**2) / beta_in
+            
+            # Courant-Snyder Transport
+            beta_out = a**2 * beta_in - 2*a*b*alpha_in + b**2 * gamma_in
+            alpha_out = -a*c * beta_in + (a*d + b*c)*alpha_in - b*d * gamma_in
+            
+            # Phase advance across this specific element
+            dphi = np.arctan2(b, a * beta_in - b * alpha_in)
+            if dphi < 0:
+                if dphi > -1e-5: dphi = 0.0  # Handle tiny numerical noise
+                else: dphi += 2 * np.pi
+                
+            betas_y[i+1] = beta_out
+            alphas_y[i+1] = alpha_out
+            phases_y[i+1] = phases_y[i] + dphi
+            
+        phase_closure_err = abs(phases_y[-1] - mu_y)
+        if self.verbose and phase_closure_err > 1e-4:
+            print(f"[WARNING] Phase closure error = {phase_closure_err:.4f} rad")
+
+        # 3. Extract properties at BPMs (Entrance of each FODO cell)
+        beta_bpm = []
+        phi_bpm = []
+        global_idx = 0
+        for n_elems in self.len_per_cell_list:
+            beta_bpm.append(betas_y[global_idx])
+            phi_bpm.append(phases_y[global_idx])
+            global_idx += n_elems
+
+        # 4. Extract properties at Target Quads
+        if quad_errors_cfg is None:
+            if self.quad_errors:
+                quad_errors_cfg = [{"FODO_index": q.FODO_index, "quad_type": q.quad_type} for q in self.quad_errors]
+            else:
+                # Default testing fallback
+                quad_errors_cfg = [{"FODO_index": ci, "quad_type": "defocusing"} for ci in range(1, self.n_FODO)]
+
+        quad_beta = []
+        quad_phi = []
+        quad_K_L = []
+
+        for q_cfg in quad_errors_cfg:
+            ci = q_cfg["FODO_index"]
+            qt = q_cfg["quad_type"].lower()
+            
+            # Locate the exact quad in the lattice map
+            target_idx = None
+            for idx, elem in enumerate(self.lattice_elements_positions):
+                if elem["cell_index"] == ci and elem["element_type"] == "Quad":
+                    is_focusing = "Focusing" in elem["description"]
+                    if (qt == "focusing" and is_focusing) or (qt == "defocusing" and not is_focusing):
+                        target_idx = idx
+                        break
+            
+            if target_idx is not None:
+                quad_beta.append(betas_y[target_idx])
+                quad_phi.append(phases_y[target_idx])
+                
+                # Vertical integrated strength (K_y = -K_x)
+                is_focusing = qt == "focusing"
+                k_x = self.k_f_nominal if is_focusing else self.k_d_nominal
+                k_y = -k_x
+                quad_K_L.append(k_y * self.L_quad)
+            else:
+                print(f"[WARNING] Could not find Target Quad: Cell {ci}, Type {qt}")
+                quad_beta.append(1.0)
+                quad_phi.append(0.0)
+                quad_K_L.append(0.0)
+
+        # 5. Build Final R_y matrix
+        n_quads = len(quad_errors_cfg)
+        R_y = np.zeros((n_BPMs, n_quads), dtype=np.float64)
+        sin_pi_nu = np.sin(np.pi * nu_y)
+        
+        for i in range(n_BPMs):
+            for j in range(n_quads):
+                sqrt_beta = np.sqrt(beta_bpm[i] * quad_beta[j])
+                cos_term = np.cos(abs(phi_bpm[i] - quad_phi[j]) - np.pi * nu_y)
+                R_y[i, j] = (sqrt_beta / (2.0 * sin_pi_nu)) * cos_term * quad_K_L[j]
+
+        if self.verbose:
+            print("\n" + "=" * 60)
+            print("RESPONSE MATRIX COMPUTATION REPORT (FROM SIMULATOR)")
+            print("=" * 60)
+            print(f"Vertical Tune (nu_y): {nu_y:.6f}")
+            print(f"Beta_y (BPMs): {[f'{b:.4f}' for b in beta_bpm]}")
+            print(f"Phase_y (BPMs): {[f'{p:.4f}' for p in phi_bpm]}")
+            print(f"Beta_y (Quads): {[f'{b:.4f}' for b in quad_beta]}")
+            print(f"Phase_y (Quads): {[f'{p:.4f}' for p in quad_phi]}")
+            print(f"K_y*L (Quads): {[f'{k:.6f}' for k in quad_K_L]}")
+            print(f"R_y shape: {R_y.shape}")
+            for row in R_y:
+                print("  [" + ", ".join(f"{v:10.6f}" for v in row) + "]")
+            print("=" * 60 + "\n")
+
+        return torch.tensor(R_y, dtype=torch.float32, device=device)
 
     @classmethod
     def find_feasible_lattices(
@@ -1709,8 +1854,7 @@ class SynchrotronSimulator:
 
         M_ring_4x4 = np.identity(4)
         for idx, M_elem in enumerate(self.M_lattice_4x4):
-            # M_ring_4x4 = M_elem @ M_ring_4x4
-            M_ring_4x4 = M_ring_4x4 @ M_elem
+            M_ring_4x4 = M_elem @ M_ring_4x4
 
         # print("One-turn 4x4 matrix =\n", M_ring_4x4)
 
@@ -1801,10 +1945,8 @@ class SynchrotronSimulator:
         D_ring_4x1 = np.zeros(4, dtype=np.float64)
 
         for M_elem, D_elem in zip(self.M_lattice_4x4, self.D_lattice_4x1):
-            # D_ring_4x1 = M_elem @ D_ring_4x1 + D_elem
-            # M_ring_4x4 = M_elem @ M_ring_4x4
-            D_ring_4x1 = M_ring_4x4 @ D_ring_4x1 + D_elem
-            M_ring_4x4 = M_ring_4x4 @ M_elem
+            D_ring_4x1 = M_elem @ D_ring_4x1 + D_elem
+            M_ring_4x4 = M_elem @ M_ring_4x4
 
         I_minus_M = np.identity(4) - M_ring_4x4
         try:

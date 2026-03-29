@@ -120,6 +120,20 @@ Examples:
         help="Output directory for training results (default: exps)",
     )
 
+    # PINN options
+    train_parser.add_argument(
+        "--use-pinn",
+        action="store_true",
+        default=False,
+        help="Enable physics-informed loss (PINN)",
+    )
+    train_parser.add_argument(
+        "--pinn-lambda",
+        type=float,
+        default=0.2,
+        help="PINN physics loss weight (default: 0.2)",
+    )
+
     # =========================================
     # EVALUATE subcommand
     # =========================================
@@ -373,8 +387,18 @@ def cmd_train(args):
 
     # Train model
     print(f"Training for {args.epochs} epochs...")
+    if args.use_pinn:
+        data_sub_cfg["merged_config"]["use_pinn"] = True
+        data_sub_cfg["merged_config"]["pinn_lambda"] = args.pinn_lambda
     train_results = train_model(
-        model, train_loader, val_loader, device, data_sub_cfg, num_epochs=args.epochs
+        model,
+        train_loader,
+        val_loader,
+        device,
+        data_sub_cfg,
+        num_epochs=args.epochs,
+        use_pinn=args.use_pinn,
+        pinn_lambda=args.pinn_lambda,
     )
 
     print_maes_micron(
