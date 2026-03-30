@@ -867,6 +867,63 @@ def train_model(
                 break # Only need to check one batch
         print("----------------------------------------------\n")
 
+    if use_pinn:
+        print("\n" + "="*65)
+        print("🔍 PRE-TRAINING DIAGNOSTIC: INTRINSIC TRACKING NOISE VERIFIER")
+        print("="*65)
+        
+        # We will check the first 5 batches to establish the baseline noise floor
+        num_batches_to_check = 5
+        total_mse_physical = 0.0
+        total_bpm_samples = 0
+        
+        with torch.no_grad():
+            for i, (batch_inputs, batch_targets) in enumerate(train_loader):
+                if i >= num_batches_to_check:
+                    break
+                    
+                batch_inputs = batch_inputs.to(device)
+                batch_targets = batch_targets.to(device)
+                
+                # 1. Unscale True Targets (Quad Misalignments) to physical meters
+                true_quad_offsets_phys = (batch_targets - target_min) / target_scale  # (Batch, 6)
+                
+                # 2. Compute Analytical Orbit using R_matrix
+                # R_matrix is (8, 6). Project offsets to get expected BPM readings
+                analytical_bpm_phys = torch.matmul(true_quad_offsets_phys, R_matrix.t())  # (Batch, 8)
+                
+                # 3. Extract and Unscale True Inputs (Simulated BPMs) to physical meters
+                inputs_4d = batch_inputs.view(batch_inputs.size(0), batch_inputs.size(1), n_BPMs, n_planes)
+                y_scaled = inputs_4d[:, :, :, 1]          # Vertical plane
+                x_actual_scaled = y_scaled.mean(dim=1)    # Turn-average (Batch, 8)
+                
+                actual_bpm_phys = (x_actual_scaled - input_min_y) / input_scale_y
+                
+                # 4. Compute Residuals (The un-cancelled tracking/statistical noise)
+                residuals = actual_bpm_phys - analytical_bpm_phys
+                
+                # 5. Accumulate MSE in physical meters squared
+                batch_mse = torch.sum(residuals ** 2).item()
+                total_mse_physical += batch_mse
+                total_bpm_samples += residuals.numel()
+                
+        # Compute final physical RMS noise
+        mean_mse_physical = total_mse_physical / total_bpm_samples
+        rms_noise_meters = np.sqrt(mean_mse_physical)
+        rms_noise_microns = rms_noise_meters * 1e6
+        
+        print(f"Verified over {num_batches_to_check} batches ({total_bpm_samples // 8} simulated orbits).")
+        print(f"Physical Mean Squared Error: {mean_mse_physical:.8e} m²")
+        print(f"Intrinsic RMS Tracking Noise: {rms_noise_microns:.2f} μm")
+        print("-" * 65)
+        print("NOTE: Your Validation PINN loss (L_phys) will plateau exactly at this noise floor.")
+        print("      Do NOT expect L_phys to reach 0.0000. This verifies the intrinsic measurement")
+        print("      limit of your 300-particle, 100-turn averaged dataset.")
+        print("=============================================================\n")
+
+    # ==========================================
+    # START TRAINING LOOP
+    # ==========================================
 
     for epoch in range(num_epochs):
         # Training

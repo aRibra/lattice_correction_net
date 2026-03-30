@@ -84,36 +84,36 @@ base_configurations = [
                 "plane": "vertical",  # 'horizontal' or 'vertical'
             },
         ],
-        # "k_errors": None,
-        "k_errors": {
-            "enabled": True,
-            "k_systemic_drift_fraction_range": (0.04, 0.04),
-            "k_stochastic_jitter_fraction_range": (0.005, 0.01),
-            "k_error_cells": [
-                {"FODO_index": 0, "quad_type": "focusing"},
-                {"FODO_index": 0, "quad_type": "defocusing"},
-                {"FODO_index": 1, "quad_type": "focusing"},
-                {"FODO_index": 1, "quad_type": "defocusing"},
-                {"FODO_index": 2, "quad_type": "focusing"},
-                {"FODO_index": 2, "quad_type": "defocusing"},
-                {"FODO_index": 3, "quad_type": "focusing"},
-                {"FODO_index": 3, "quad_type": "defocusing"},
-                {"FODO_index": 4, "quad_type": "focusing"},
-                {"FODO_index": 4, "quad_type": "defocusing"},
-                {"FODO_index": 5, "quad_type": "focusing"},
-                {"FODO_index": 5, "quad_type": "defocusing"},
-                {"FODO_index": 6, "quad_type": "focusing"},
-                {"FODO_index": 6, "quad_type": "defocusing"},
-                {"FODO_index": 7, "quad_type": "focusing"},
-                {"FODO_index": 7, "quad_type": "defocusing"},
-            ],
-        },
-        # "quad_tilt_errors": None,
-        "quad_tilt_errors": [
-            {"FODO_index": 1, "quad_type": "defocusing", "tilt_angle": 0.0005},
-            {"FODO_index": 3, "quad_type": "defocusing", "tilt_angle": 0.0005},
-            {"FODO_index": 6, "quad_type": "defocusing", "tilt_angle": 0.0005},
-        ],
+        "k_errors": None,
+        # "k_errors": {
+        #     "enabled": True,
+        #     "k_systemic_drift_fraction_range": (0.04, 0.04),
+        #     "k_stochastic_jitter_fraction_range": (0.005, 0.01),
+        #     "k_error_cells": [
+        #         {"FODO_index": 0, "quad_type": "focusing"},
+        #         {"FODO_index": 0, "quad_type": "defocusing"},
+        #         {"FODO_index": 1, "quad_type": "focusing"},
+        #         {"FODO_index": 1, "quad_type": "defocusing"},
+        #         {"FODO_index": 2, "quad_type": "focusing"},
+        #         {"FODO_index": 2, "quad_type": "defocusing"},
+        #         {"FODO_index": 3, "quad_type": "focusing"},
+        #         {"FODO_index": 3, "quad_type": "defocusing"},
+        #         {"FODO_index": 4, "quad_type": "focusing"},
+        #         {"FODO_index": 4, "quad_type": "defocusing"},
+        #         {"FODO_index": 5, "quad_type": "focusing"},
+        #         {"FODO_index": 5, "quad_type": "defocusing"},
+        #         {"FODO_index": 6, "quad_type": "focusing"},
+        #         {"FODO_index": 6, "quad_type": "defocusing"},
+        #         {"FODO_index": 7, "quad_type": "focusing"},
+        #         {"FODO_index": 7, "quad_type": "defocusing"},
+        #     ],
+        # },
+        "quad_tilt_errors": None,
+        # "quad_tilt_errors": [
+        #     {"FODO_index": 1, "quad_type": "defocusing", "tilt_angle": 0.0005},
+        #     {"FODO_index": 3, "quad_type": "defocusing", "tilt_angle": 0.0005},
+        #     {"FODO_index": 6, "quad_type": "defocusing", "tilt_angle": 0.0005},
+        # ],
         "dipole_tilt_errors": None,
         # 'dipole_tilt_errors': [
         #     {
@@ -150,7 +150,7 @@ common_parameters = {
     "y0_mean_std": (0.0, 0.05),  # meters
     "yp0_mean_std": (0.0, 0.00),  # radians
     "particles_sampling_method": "from_twiss_params",  # from_twiss_params | circle_with_radius | normal
-    "correct_injection_offset": False,
+    "correct_injection_offset": True,
     "sampling_circle_radius": 0.01,  # meters,
     # Acceptable ranges config params
     "mag_field_range": [0.1, 2.0],  # Tesla
@@ -189,5 +189,5 @@ common_parameters = {
     "dipole_tilt_angle_range": (0, 0.05),  # 50 mrad
     "com_delta_range": (-5e-05, 5e-05),
     "use_pinn": True,
-    "pinn_lambda": 0.2,
+    "pinn_lambda": 0.005,
 }

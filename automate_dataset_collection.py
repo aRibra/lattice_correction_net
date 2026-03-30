@@ -788,7 +788,7 @@ class DataAutomation:
             keep_mask = torch.isfinite(input_data_flat).all(dim=1)
 
             print(
-                f"Keeping {keep_mask.sum().item()} samples containing NaNs/Infs out of {n_samples}."
+                f"Removing {n_samples - keep_mask.sum().item()} samples containing NaNs/Infs out of {n_samples}."
             )
             self.all_input_tensors_torch = self.all_input_tensors_torch[keep_mask]
             self.all_target_tensors_torch = self.all_target_tensors_torch[keep_mask]
