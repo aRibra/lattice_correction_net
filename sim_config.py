@@ -34,6 +34,7 @@ base_configurations = [
         # 'L_straight': 1,         # meters
         # 'total_dipole_bending_angle': (2 * np.pi),#(3 / 3) * np.pi,
         # 'quad_errors': None,
+        
         "quad_errors": [
             # {
             #     'FODO_index': 0,
@@ -84,36 +85,39 @@ base_configurations = [
                 "plane": "vertical",  # 'horizontal' or 'vertical'
             },
         ],
-        "k_errors": None,
-        # "k_errors": {
-        #     "enabled": True,
-        #     "k_systemic_drift_fraction_range": (0.04, 0.04),
-        #     "k_stochastic_jitter_fraction_range": (0.005, 0.01),
-        #     "k_error_cells": [
-        #         {"FODO_index": 0, "quad_type": "focusing"},
-        #         {"FODO_index": 0, "quad_type": "defocusing"},
-        #         {"FODO_index": 1, "quad_type": "focusing"},
-        #         {"FODO_index": 1, "quad_type": "defocusing"},
-        #         {"FODO_index": 2, "quad_type": "focusing"},
-        #         {"FODO_index": 2, "quad_type": "defocusing"},
-        #         {"FODO_index": 3, "quad_type": "focusing"},
-        #         {"FODO_index": 3, "quad_type": "defocusing"},
-        #         {"FODO_index": 4, "quad_type": "focusing"},
-        #         {"FODO_index": 4, "quad_type": "defocusing"},
-        #         {"FODO_index": 5, "quad_type": "focusing"},
-        #         {"FODO_index": 5, "quad_type": "defocusing"},
-        #         {"FODO_index": 6, "quad_type": "focusing"},
-        #         {"FODO_index": 6, "quad_type": "defocusing"},
-        #         {"FODO_index": 7, "quad_type": "focusing"},
-        #         {"FODO_index": 7, "quad_type": "defocusing"},
-        #     ],
-        # },
-        "quad_tilt_errors": None,
-        # "quad_tilt_errors": [
-        #     {"FODO_index": 1, "quad_type": "defocusing", "tilt_angle": 0.0005},
-        #     {"FODO_index": 3, "quad_type": "defocusing", "tilt_angle": 0.0005},
-        #     {"FODO_index": 6, "quad_type": "defocusing", "tilt_angle": 0.0005},
-        # ],
+        
+        # "k_errors": None,
+        "k_errors": {
+            "enabled": True,
+            "k_systemic_drift_fraction_range": (0.04, 0.04),
+            "k_stochastic_jitter_fraction_range": (0.005, 0.01),
+            "k_error_cells": [
+                {"FODO_index": 0, "quad_type": "focusing"},
+                {"FODO_index": 0, "quad_type": "defocusing"},
+                {"FODO_index": 1, "quad_type": "focusing"},
+                {"FODO_index": 1, "quad_type": "defocusing"},
+                {"FODO_index": 2, "quad_type": "focusing"},
+                {"FODO_index": 2, "quad_type": "defocusing"},
+                {"FODO_index": 3, "quad_type": "focusing"},
+                {"FODO_index": 3, "quad_type": "defocusing"},
+                {"FODO_index": 4, "quad_type": "focusing"},
+                {"FODO_index": 4, "quad_type": "defocusing"},
+                {"FODO_index": 5, "quad_type": "focusing"},
+                {"FODO_index": 5, "quad_type": "defocusing"},
+                {"FODO_index": 6, "quad_type": "focusing"},
+                {"FODO_index": 6, "quad_type": "defocusing"},
+                {"FODO_index": 7, "quad_type": "focusing"},
+                {"FODO_index": 7, "quad_type": "defocusing"},
+            ],
+        },
+        
+        # "quad_tilt_errors": None,
+        "quad_tilt_errors": [
+            {"FODO_index": 1, "quad_type": "defocusing", "tilt_angle": 0.0005},
+            {"FODO_index": 3, "quad_type": "defocusing", "tilt_angle": 0.0005},
+            {"FODO_index": 6, "quad_type": "defocusing", "tilt_angle": 0.0005},
+        ],
+        
         "dipole_tilt_errors": None,
         # 'dipole_tilt_errors': [
         #     {
@@ -145,9 +149,9 @@ common_parameters = {
     "window_size": 0,  # Average window size for moving averages
     "use_thin_lens": True,
     # Uniform - Initial conditions ranges as tuples
-    "x0_mean_std": (0.0, 0.05),  # meters
+    "x0_mean_std": (0.0, 0.00),  # meters
     "xp0_mean_std": (0.0, 0.00),  # radians
-    "y0_mean_std": (0.0, 0.05),  # meters
+    "y0_mean_std": (0.0, 0.00),  # meters
     "yp0_mean_std": (0.0, 0.00),  # radians
     "particles_sampling_method": "from_twiss_params",  # from_twiss_params | circle_with_radius | normal
     "correct_injection_offset": True,
@@ -160,7 +164,7 @@ common_parameters = {
     "total_dipole_bending_angle_range": (1.5 * np.pi, 2 * np.pi),
     # Use cuda GPU kernels to accelerate simulation
     "use_gpu_torch": True,
-    "max_iter_per_infer": 2000,  # Max number of iterations per inference step (for PyTorch GPU simulation)
+    "max_iter_per_infer": 3000,  # Max number of iterations per inference step (for PyTorch GPU simulation)
     # Log
     "verbose": True,
     # BPM readings log criterion

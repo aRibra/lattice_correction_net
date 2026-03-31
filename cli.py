@@ -10,11 +10,22 @@ import argparse
 import torch
 
 from constants import Constants as C
-from data import gen_data, load_data_from_dir, prepare_data_for_training
+from data import (
+    gen_data,
+    load_data_from_dir,
+    prepare_data_for_training,
+    get_data_splits,
+)
 from net import build_model, build_model_from_train_dir, train_model
 from eval import main_evaluation_block, inference_on_validation_data
-from visualization import plot_data_histograms, print_maes_micron
+from visualization import (
+    plot_data_histograms,
+    print_maes_micron,
+    plot_benchmark_accumulated_datasets,
+)
+from sim_config import SAVE_DIR_BENCHMARKS
 from utils import serialize_minmax_scaler
+from accumulated_training import train_accumulated_datasets
 
 
 def create_parser():
@@ -323,6 +334,79 @@ Examples:
         help="Number of runs per noise/shift level (default: 50)",
     )
 
+    # =========================================
+    # ACCUMULATED TRAINING subcommand
+    # =========================================
+    accum_parser = subparsers.add_parser(
+        "accumulated",
+        help="Run accumulated training benchmark",
+        description="Train on progressively larger subsets of data to benchmark scaling.",
+    )
+
+    accum_parser.add_argument(
+        "--data-dir",
+        "-d",
+        type=str,
+        required=True,
+        help="Data directory containing training data (required)",
+    )
+
+    accum_parser.add_argument(
+        "--model-arch",
+        "-m",
+        type=str,
+        choices=[
+            C.NET_ARCH_LSTM,
+            C.NET_ARCH_SIMPLE_FULLY_CONNECTED,
+            C.NET_ARCH_SIMPLE_CNN,
+        ],
+        default=C.NET_ARCH_LSTM,
+        help=f"Model architecture to use (default: {C.NET_ARCH_LSTM})",
+    )
+
+    accum_parser.add_argument(
+        "--epochs",
+        "-e",
+        type=int,
+        default=900,
+        help="Number of training epochs (default: 900)",
+    )
+    accum_parser.add_argument(
+        "--batch-size",
+        "-b",
+        type=int,
+        default=16,
+        help="Batch size (default: 16)",
+    )
+    accum_parser.add_argument(
+        "--test-size",
+        "-t",
+        type=float,
+        default=0.10,
+        help="Test/validation size fraction (default: 0.10)",
+    )
+
+    accum_parser.add_argument(
+        "--num-datasets",
+        "-n",
+        type=int,
+        default=10,
+        help="Number of accumulated datasets (default: 10)",
+    )
+
+    accum_parser.add_argument(
+        "--use-pinn",
+        action="store_true",
+        default=False,
+        help="Enable physics-informed loss (PINN)",
+    )
+    accum_parser.add_argument(
+        "--pinn-lambda",
+        type=float,
+        default=0.2,
+        help="PINN physics loss weight (default: 0.2)",
+    )
+
     return parser
 
 
@@ -613,12 +697,120 @@ def cmd_benchmark(args):
     return 0
 
 
+def cmd_accumulated_training(args):
+    """Handle the accumulated training benchmark subcommand."""
+    import os
+
+    device = get_device()
+    print(f"Using device: {device}")
+
+    if not os.path.exists(args.data_dir):
+        print(f"Error: Data directory '{args.data_dir}' does not exist.")
+        return 1
+
+    print(f"Loading data from: {args.data_dir}")
+    sim_data = load_data_from_dir(args.data_dir)
+
+    data_sub_cfg = {
+        "merged_config": sim_data[C.DATA_KEY_MERGED_CONFIG],
+        "input_scaler_config": serialize_minmax_scaler(
+            sim_data[C.DATA_KEY_DATASET_SCALERS]["input_scaler"]
+        ),
+        "target_scaler_config": serialize_minmax_scaler(
+            sim_data[C.DATA_KEY_DATASET_SCALERS]["target_scaler"]
+        ),
+        "overridden_base_config": sim_data[
+            C.DATA_KEY_DATA_AUTOMATION
+        ].overridden_base_config.copy(),
+    }
+
+    if args.use_pinn:
+        data_sub_cfg["merged_config"]["use_pinn"] = True
+        data_sub_cfg["merged_config"]["pinn_lambda"] = args.pinn_lambda
+
+    train_inputs, val_inputs, train_targets, val_targets, data_shapes = get_data_splits(
+        sim_data, test_size=args.test_size, model_arch=args.model_arch
+    )
+
+    print(
+        f"Running accumulated training benchmark with {args.num_datasets} datasets..."
+    )
+    print(f"  Data directory: {args.data_dir}")
+    print(f"  Model architecture: {args.model_arch}")
+    print(f"  Epochs: {args.epochs}")
+    print(f"  Batch size: {args.batch_size}")
+    print(f"  Validation split: {args.test_size}")
+    print(f"  PINN enabled: {args.use_pinn}")
+    if args.use_pinn:
+        print(f"  PINN lambda: {args.pinn_lambda}")
+
+    sample_sizes, accuracies_val, accuracies_train = train_accumulated_datasets(
+        X_train=train_inputs,
+        y_train=train_targets,
+        X_val=val_inputs,
+        y_val=val_targets,
+        batch_size=args.batch_size,
+        data_shapes=data_shapes,
+        data_sub_cfg=data_sub_cfg,
+        number_of_accumulated_datasets=args.num_datasets,
+        model_arch=args.model_arch,
+        device=device,
+        num_epochs=args.epochs,
+        use_pinn=args.use_pinn,
+        pinn_lambda=args.pinn_lambda,
+    )
+
+    dataset_scalers = sim_data[C.DATA_KEY_DATASET_SCALERS]
+
+    benchmark_results = {
+        C.KEY_ACCUMULATED_DATASETS: {
+            "nb_datasets": args.num_datasets,
+            "results_val_mae": accuracies_val,
+            "results_train_mae": accuracies_train,
+        }
+    }
+
+    benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_val_mae_unscaled"] = {}
+    benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_train_mae_unscaled"] = {}
+
+    mean_min, mean_max = (
+        dataset_scalers["target_scaler"].data_min_.mean(),
+        dataset_scalers["target_scaler"].data_max_.mean(),
+    )
+    mean_scaler = mean_max - mean_min
+
+    for ii, accc in accuracies_val.items():
+        mean_unscaled = accc * mean_scaler
+        print(f"{mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
+        benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_val_mae_unscaled"][
+            ii
+        ] = mean_unscaled
+
+    for ii, accc in accuracies_train.items():
+        mean_unscaled = accc * mean_scaler
+        print(f"{mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
+        benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_train_mae_unscaled"][
+            ii
+        ] = mean_unscaled
+
+    torch.save(
+        benchmark_results,
+        f"{SAVE_DIR_BENCHMARKS}/benchmark_results_accumulated_datasets.pt",
+    )
+
+    plot_benchmark_accumulated_datasets(benchmark_results)
+
+    print("Accumulated training benchmark completed.")
+    return 0
+
+
 # Mapping of commands to handler functions
 COMMAND_HANDLERS = {
     "generate": cmd_generate,
     "train": cmd_train,
     "evaluate": cmd_evaluate,
     "benchmark": cmd_benchmark,
+    "accumulated": cmd_accumulated_training,
 }
 
 
