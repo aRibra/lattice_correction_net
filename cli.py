@@ -7,6 +7,7 @@
 #   python3 main.py benchmark --model-dir <path> --type quad_tilt
 
 import argparse
+import random
 import torch
 
 from constants import Constants as C
@@ -698,6 +699,12 @@ def cmd_benchmark(args):
 
 
 def cmd_accumulated_training(args):
+    import numpy as np
+    torch.manual_seed(42)  # For reproducibility
+    torch.cuda.manual_seed(42)
+    np.random.seed(42)  # For reproducibility
+    random.seed(42)  # For reproducibility
+
     """Handle the accumulated training benchmark subcommand."""
     import os
 
@@ -779,16 +786,18 @@ def cmd_accumulated_training(args):
     )
     mean_scaler = mean_max - mean_min
 
+    print("\nValidation MAE (unscaled):")
     for ii, accc in accuracies_val.items():
         mean_unscaled = accc * mean_scaler
-        print(f"{mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
+        print(f"{len(accuracies_val)}, {mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
         benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_val_mae_unscaled"][
             ii
         ] = mean_unscaled
 
+    print("\nTraining MAEs (unscaled):")
     for ii, accc in accuracies_train.items():
         mean_unscaled = accc * mean_scaler
-        print(f"{mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
+        print(f"{len(accuracies_train)}, {mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
         benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_train_mae_unscaled"][
             ii
         ] = mean_unscaled

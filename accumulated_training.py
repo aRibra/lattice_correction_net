@@ -60,12 +60,21 @@ def train_accumulated_datasets(
 
     for i in range(1, number_of_accumulated_datasets + 1):
         current_size = increment * i
+        
+        # # # Temp...
+        # if i not in [3, 4, 5, 6, 7, 8, 9]:
+        #     continue
+        
+        print("current_size: ", current_size)
+        
         if i == number_of_accumulated_datasets:
             current_size = (
                 total_samples  # Ensure all samples are used in the last dataset
             )
         X_subset = X_train[:current_size]
         y_subset = y_train[:current_size]
+
+        print(X_subset, y_subset)
 
         print(
             f"\nTraining on dataset {i}/{number_of_accumulated_datasets} with {current_size} samples"

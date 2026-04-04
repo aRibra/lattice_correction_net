@@ -367,7 +367,7 @@ def build_model(model_type, data_shapes, device, **kwargs):
     if model_type == C.NET_ARCH_LSTM:
         # LSTM model
         lstm_hidden_size = 256
-        num_layers = 1
+        num_layers = 3
         is_bidirectional = True
 
         if "hidden_size" in kwargs:
