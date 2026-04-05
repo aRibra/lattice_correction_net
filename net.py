@@ -24,11 +24,32 @@ class QuadErrorCorrectionLSTM(nn.Module):
         num_layers=2,
         output_size=1,
         is_bidirectional=False,
+        couple_xy=False,
+        n_BPMs=None,
+        n_planes=None,
     ):
         super(QuadErrorCorrectionLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.is_bidirectional = is_bidirectional
+        self.couple_xy = couple_xy
+        self.n_BPMs = n_BPMs
+        self.n_planes = n_planes
+
+        if self.couple_xy:
+            if self.n_BPMs is None or self.n_planes is None:
+                raise ValueError(
+                    "couple_xy=True requires n_BPMs and n_planes to be specified"
+                )
+            actual_input_size = n_BPMs * (n_planes + 1)
+            if input_size != actual_input_size:
+                raise ValueError(
+                    f"couple_xy=True: input_size should be {actual_input_size} "
+                    f"(n_BPMs={n_BPMs} * (n_planes+1)={n_planes+1}), "
+                    f"but got {input_size}"
+                )
+
+        self.lstm_input_size = input_size
 
         # LSTM layer
         self.lstm = nn.LSTM(
@@ -49,6 +70,14 @@ class QuadErrorCorrectionLSTM(nn.Module):
         # self.tanh = nn.Tanh()
 
     def forward(self, x):
+        if self.couple_xy:
+            batch_size, turns, _ = x.shape
+            x_reshaped = x.view(batch_size, turns, self.n_BPMs, self.n_planes)
+            x_plane = x_reshaped[:, :, :, :2]
+            xy_coupling = x_plane[:, :, :, 0:1] * x_plane[:, :, :, 1:2]
+            x_with_coupling = torch.cat([x_plane, xy_coupling], dim=3)
+            x = x_with_coupling.reshape(batch_size, turns, self.n_BPMs * 3)
+
         # Initialize hidden and cell states with zeros
         h0 = torch.zeros(
             self.num_layers * self.hidden_size_mult, x.size(0), self.hidden_size
@@ -340,8 +369,10 @@ def build_model_from_train_dir(model_train_dir, device):
     data_shapes = config["data_shapes"]
     model_type = config["model_type"]
     data_sub_cfg = config["data_sub_cfg"]
+    model_params = config.get("model_parameters", {})
+    couple_xy = model_params.get("couple_xy", False)
 
-    model = build_model(model_type, data_shapes, device)
+    model = build_model(model_type, data_shapes, device, couple_xy=couple_xy)
     model = load_from_checkpoint(model, chkpnt_path)
 
     return model, data_sub_cfg
@@ -369,6 +400,7 @@ def build_model(model_type, data_shapes, device, **kwargs):
         lstm_hidden_size = 256
         num_layers = 2
         is_bidirectional = True
+        couple_xy = False
 
         if "hidden_size" in kwargs:
             lstm_hidden_size = kwargs["hidden_size"]
@@ -376,6 +408,11 @@ def build_model(model_type, data_shapes, device, **kwargs):
             num_layers = kwargs["num_layers"]
         if "is_bidirectional" in kwargs:
             is_bidirectional = kwargs["is_bidirectional"]
+        if "couple_xy" in kwargs:
+            couple_xy = kwargs["couple_xy"]
+
+        if couple_xy:
+            input_size = n_BPMs * (n_planes + 1)
 
         model = QuadErrorCorrectionLSTM(
             input_size=input_size,
@@ -383,6 +420,9 @@ def build_model(model_type, data_shapes, device, **kwargs):
             num_layers=num_layers,
             output_size=n_errors,
             is_bidirectional=is_bidirectional,
+            couple_xy=couple_xy,
+            n_BPMs=n_BPMs,
+            n_planes=n_planes,
         )
 
     elif model_type == C.NET_ARCH_SIMPLE_FULLY_CONNECTED:
@@ -619,6 +659,18 @@ def train_model(
     if pinn_lambda is None:
         pinn_lambda = merged_config.get("pinn_lambda", 0.2)
 
+    n_BPMs = model.data_shapes["raw_input_tensors_shape"][2]
+    n_planes = model.data_shapes["raw_input_tensors_shape"][3]
+    couple_xy = getattr(model, "couple_xy", False)
+
+    if couple_xy:
+        planes = merged_config.get("planes", None)
+        if n_planes != 2 or planes != ["x", "y"]:
+            raise ValueError(
+                f"couple_xy=True requires n_planes=2 and planes=['x', 'y'], "
+                f"but got n_planes={n_planes}, planes={planes}"
+            )
+
     if type(model) == SimpleFullyConnectedNetwork:
         lr = 0.0001
     elif type(model) == QuadErrorCorrectionLSTM:
@@ -732,6 +784,7 @@ def train_model(
             "num_layers": getattr(model, "num_layers", None),
             "output_size": getattr(model, "output_size", None),
             "is_bidirectional": getattr(model, "is_bidirectional", None),
+            "couple_xy": getattr(model, "couple_xy", False),
         },
         "optimizer_type": optimizer_type.__name__,
         "optimizer_params": optimizer.defaults

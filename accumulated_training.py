@@ -32,6 +32,7 @@ def train_accumulated_datasets(
     num_epochs=600,
     use_pinn=None,
     pinn_lambda=0.2,
+    couple_xy=False,
 ):
     """
     Splits the training data into accumulated datasets and trains the model on each subset.
@@ -97,7 +98,7 @@ def train_accumulated_datasets(
         )
 
         # Instantiate a new model
-        model_acc = build_model(model_arch, data_shapes, device)
+        model_acc = build_model(model_arch, data_shapes, device, couple_xy=couple_xy)
         print("Model architecture: ", model_acc)
 
         # Train the model

@@ -94,6 +94,12 @@ Examples:
         default=C.NET_ARCH_LSTM,
         help=f"Model architecture to use (default: {C.NET_ARCH_LSTM})",
     )
+    train_parser.add_argument(
+        "--couple-xy",
+        action="store_true",
+        default=False,
+        help="Enable x*y coupling input for LSTM model (default: False)",
+    )
 
     # Training hyperparameters
     train_parser.add_argument(
@@ -407,6 +413,12 @@ Examples:
         default=0.2,
         help="PINN physics loss weight (default: 0.2)",
     )
+    accum_parser.add_argument(
+        "--couple-xy",
+        action="store_true",
+        default=False,
+        help="Enable x*y coupling input for LSTM model (default: False)",
+    )
 
     return parser
 
@@ -454,7 +466,7 @@ def cmd_train(args):
 
     # Build model
     print(f"Building model with architecture: {args.model_arch}")
-    model = build_model(args.model_arch, data_shapes, device)
+    model = build_model(args.model_arch, data_shapes, device, couple_xy=args.couple_xy)
     print(model)
 
     # Get data sub config for saving
@@ -765,6 +777,7 @@ def cmd_accumulated_training(args):
         num_epochs=args.epochs,
         use_pinn=args.use_pinn,
         pinn_lambda=args.pinn_lambda,
+        couple_xy=args.couple_xy,
     )
 
     dataset_scalers = sim_data[C.DATA_KEY_DATASET_SCALERS]
