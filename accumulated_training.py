@@ -62,7 +62,7 @@ def train_accumulated_datasets(
         current_size = increment * i
         
         # # # Temp...
-        # if i not in [3, 4, 5, 6, 7, 8, 9]:
+        # if i not in range(1, 4 + 1):
         #     continue
         
         print("current_size: ", current_size)
@@ -98,6 +98,7 @@ def train_accumulated_datasets(
 
         # Instantiate a new model
         model_acc = build_model(model_arch, data_shapes, device)
+        print("Model architecture: ", model_acc)
 
         # Train the model
         training_results = train_model(
@@ -112,20 +113,21 @@ def train_accumulated_datasets(
             pinn_lambda=pinn_lambda,
         )
 
-        train_losses_acc = training_results["train_losses"]
-        val_losses_acc = training_results["val_losses"]
         train_maes_acc = training_results["train_maes"]
         val_maes_acc = training_results["val_maes"]
 
-        val_avg_mae_acc = np.array(val_maes_acc).mean()
-        train_avg_maes_acc = np.array(train_maes_acc).mean()
+        val_mae_acc = np.array(val_maes_acc).min()
+        
+        val_argmin_mae_acc = np.array(val_maes_acc).argmin()
+        train_mae_acc = train_maes_acc[val_argmin_mae_acc]
 
-        print(f"Dataset {i} Validation MAE: {val_avg_mae_acc:.6f}")
+        print(f"Dataset {i} Min Validation MAE at epoch {val_argmin_mae_acc}: {val_mae_acc:.6f}")
+        print(f"Dataset {i} Min Train MAE at that same epoch {val_argmin_mae_acc}: {train_mae_acc:.6f}")
 
         # Record the results
         sample_sizes.append(current_size)
-        accuracies_val[current_size] = val_avg_mae_acc
-        accuracies_train[current_size] = train_avg_maes_acc
+        accuracies_val[current_size] = val_mae_acc
+        accuracies_train[current_size] = train_mae_acc
 
     return sample_sizes, accuracies_val, accuracies_train
 
