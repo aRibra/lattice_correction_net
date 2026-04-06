@@ -25,29 +25,12 @@ class QuadErrorCorrectionLSTM(nn.Module):
         output_size=1,
         is_bidirectional=False,
         couple_xy=False,
-        n_BPMs=None,
-        n_planes=None,
     ):
         super(QuadErrorCorrectionLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.is_bidirectional = is_bidirectional
         self.couple_xy = couple_xy
-        self.n_BPMs = n_BPMs
-        self.n_planes = n_planes
-
-        if self.couple_xy:
-            if self.n_BPMs is None or self.n_planes is None:
-                raise ValueError(
-                    "couple_xy=True requires n_BPMs and n_planes to be specified"
-                )
-            actual_input_size = n_BPMs * (n_planes + 1)
-            if input_size != actual_input_size:
-                raise ValueError(
-                    f"couple_xy=True: input_size should be {actual_input_size} "
-                    f"(n_BPMs={n_BPMs} * (n_planes+1)={n_planes+1}), "
-                    f"but got {input_size}"
-                )
 
         self.lstm_input_size = input_size
 
@@ -71,12 +54,11 @@ class QuadErrorCorrectionLSTM(nn.Module):
 
     def forward(self, x):
         if self.couple_xy:
-            batch_size, turns, _ = x.shape
-            x_reshaped = x.view(batch_size, turns, self.n_BPMs, self.n_planes)
-            x_plane = x_reshaped[:, :, :, :2]
-            xy_coupling = x_plane[:, :, :, 0:1] * x_plane[:, :, :, 1:2]
-            x_with_coupling = torch.cat([x_plane, xy_coupling], dim=3)
-            x = x_with_coupling.reshape(batch_size, turns, self.n_BPMs * 3)
+            batch_size, turns, n_bpms, n_feat = x.shape
+            x_plane = x[..., 0:2]
+            xy_coupling = x_plane[..., 0:1] * x_plane[..., 1:2]
+            x_with_coupling = torch.cat([x_plane, xy_coupling], dim=-1)
+            x = x_with_coupling.reshape(batch_size, turns, n_bpms * 3)
 
         # Initialize hidden and cell states with zeros
         h0 = torch.zeros(
@@ -192,52 +174,38 @@ class SimpleFullyConnectedNetwork(nn.Module):
         return out
 
 
-class SimpleCNN(nn.Module):
+class QuadErrorCorrectionCNN1D(nn.Module):
     def __init__(
         self,
-        input_channels=2,
-        hidden_size=32,
+        n_turns,
+        n_bpms,
+        n_features=3,
+        hidden_size=128,
         output_size=1,
-        num_layers=3,
-        nb_heads=None,
-        add_batch_norm=False,
+        num_layers=6,
+        kernel_size=7,
+        dilations=[1, 2, 4, 8, 16, 32],
+        add_batch_norm=True,
         add_dropout=False,
-        down_s_factor=1,
+        dropout_p=0.1,
         act="relu",
-        target_height=12,
-        target_width=4,
     ):
-        """
-        Initialize the SimpleCNN with Adaptive Pooling.
-
-        Args:
-            input_channels (int): Number of input channels. Default is 2 for [x, y] planes.
-            hidden_size (int): Base number of output channels for the first conv layer.
-            output_size (int): Size of the output layer.
-            num_layers (int): Number of convolutional layers.
-            nb_heads (int or None): Number of output heads. If None, a single head is used.
-            add_batch_norm (bool): If True, adds BatchNorm2d after conv layers.
-            add_dropout (bool): If True, adds Dropout2d after activation functions.
-            down_s_factor (int): Downsampling factor to reduce spatial dimensions.
-            act (str): Activation function to use ('relu' or 'elu').
-            target_height (int): Target height after adaptive pooling.
-            target_width (int): Target width after adaptive pooling.
-        """
-        super(SimpleCNN, self).__init__()
-
-        self.input_channels = input_channels
+        super(QuadErrorCorrectionCNN1D, self).__init__()
+        self.n_turns = n_turns
+        self.n_bpms = n_bpms
+        self.n_features = n_features
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.num_layers = num_layers
-        self.nb_heads = nb_heads
-        self.down_s_factor = down_s_factor
+        self.kernel_size = kernel_size
+        self.dilations = dilations
         self.add_batch_norm = add_batch_norm
         self.add_dropout = add_dropout
+        self.dropout_p = dropout_p
         self.act = act
-        self.target_height = target_height
-        self.target_width = target_width
 
-        # Define activation function
+        self.in_channels = n_bpms * n_features
+
         if act.lower() == "relu":
             activation_fn = nn.ReLU()
         elif act.lower() == "elu":
@@ -245,119 +213,76 @@ class SimpleCNN(nn.Module):
         else:
             raise ValueError(f"Unsupported activation function: {act}")
 
-        # Initialize convolutional layers
         self.conv_layers = nn.ModuleList()
-        current_in_channels = input_channels
-        current_out_channels = hidden_size
+        self.residual_convs = nn.ModuleList()
+        current_in_channels = self.in_channels
 
-        for layer in range(1, num_layers + 1):
-            # Calculate out_channels based on down_s_factor
-            if layer == 1:
+        for layer in range(num_layers):
+            if layer == 0:
                 out_channels = hidden_size
             else:
-                out_channels = hidden_size // (2 ** ((layer - 1) * down_s_factor))
-                out_channels = max(1, out_channels)  # Ensure at least 1 channel
+                out_channels = max(32, hidden_size // (2**layer))
 
-            # Append Conv2d layer
-            conv = nn.Conv2d(
-                in_channels=current_in_channels,
-                out_channels=out_channels,
-                kernel_size=3,
-                padding=1,
+            dilation = dilations[layer] if layer < len(dilations) else dilations[-1]
+
+            layers = []
+
+            layers.append(
+                nn.Conv1d(
+                    in_channels=current_in_channels,
+                    out_channels=out_channels,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    padding=(kernel_size - 1) * dilation // 2,
+                )
             )
-            self.conv_layers.append(conv)
 
-            # Optional BatchNorm2d
             if add_batch_norm:
-                bn = nn.BatchNorm2d(out_channels)
-                self.conv_layers.append(bn)
+                layers.append(nn.BatchNorm1d(out_channels))
 
-            # Append activation function
-            self.conv_layers.append(activation_fn)
+            layers.append(activation_fn)
 
-            # Optional Dropout2d
             if add_dropout:
-                dropout = nn.Dropout2d(p=0.05)
-                self.conv_layers.append(dropout)
+                layers.append(nn.Dropout(p=dropout_p))
 
-            # Append MaxPool2d for downsampling
-            if down_s_factor > 0:
-                pool = nn.MaxPool2d(kernel_size=2, stride=1, ceil_mode=True)
-                self.conv_layers.append(pool)
+            self.conv_layers.append(nn.Sequential(*layers))
 
-            # Update channels for next layer
+            if current_in_channels != out_channels:
+                self.residual_convs.append(
+                    nn.Conv1d(current_in_channels, out_channels, kernel_size=1)
+                )
+            else:
+                self.residual_convs.append(nn.Identity())
+
             current_in_channels = out_channels
 
-        # Adaptive Pooling to fix spatial dimensions
-        self.adaptive_pool = nn.AdaptiveAvgPool2d(
-            (self.target_height, self.target_width)
-        )
+        self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
 
-        # Calculate flatten_size
-        self.flatten_size = current_in_channels * self.target_height * self.target_width
-        print(
-            f"Flatten size after adaptive pooling: {self.flatten_size} "
-            f"(Channels: {current_in_channels}, Height: {self.target_height}, Width: {self.target_width})"
-        )
+        self.flatten_size = current_in_channels * 2
 
-        # Fully connected layers
-        fcn_hidden_size = hidden_size // 2
+        fcn_hidden_size = hidden_size
         self.fc = nn.Sequential(
-            nn.Linear(self.flatten_size, fcn_hidden_size), activation_fn
+            nn.Linear(self.flatten_size, fcn_hidden_size),
+            activation_fn,
+            nn.Linear(fcn_hidden_size, output_size),
         )
-
-        if add_batch_norm:
-            self.fc.add_module("bn_fc", nn.BatchNorm1d(fcn_hidden_size))
-
-        if add_dropout:
-            self.fc.add_module("dropout_fc", nn.Dropout(p=0.05))
-
-        # Output layers
-        if self.nb_heads is None:
-            # Single output head
-            self.fc.add_module(
-                "output_layer", nn.Linear(fcn_hidden_size, self.output_size)
-            )
-        else:
-            # Multiple output heads
-            self.heads = nn.ModuleDict(
-                {
-                    f"head_{ixh}": nn.Linear(fcn_hidden_size, 1)
-                    for ixh in range(self.nb_heads)
-                }
-            )
 
     def forward(self, x):
-        """
-        Forward pass of the CNN with Adaptive Pooling.
+        batch_size, n_turns, n_bpms, n_feat = x.shape
+        x = x.view(batch_size, n_turns, n_bpms * n_feat)
+        x = x.permute(0, 2, 1)
 
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, input_channels, height, width)
+        for conv_block, residual_conv in zip(self.conv_layers, self.residual_convs):
+            res = residual_conv(x)
+            out = conv_block(x)
+            x = out + res
 
-        Returns:
-            torch.Tensor: Output tensor of shape (batch_size, output_size) or (batch_size, nb_heads)
-        """
-        # Pass through convolutional layers
-        for layer in self.conv_layers:
-            x = layer(x)
-
-        # Apply adaptive pooling
-        x = self.adaptive_pool(x)
-
-        # Flatten the tensor
-        x = x.view(x.size(0), -1)
-
-        # Pass through fully connected layers
+        avg = self.avg_pool(x)
+        max = self.max_pool(x)
+        x = torch.cat([avg, max], dim=1)
+        x = x.view(batch_size, -1)
         out = self.fc(x)
-
-        # Handle multiple heads
-        if self.nb_heads is not None:
-            heads_out = []
-            for head_name, head_layer in self.heads.items():
-                head_out = head_layer(out)
-                heads_out.append(head_out)
-            # Concatenate all head outputs
-            out = torch.cat(heads_out, dim=1)
 
         return out
 
@@ -381,7 +306,7 @@ def build_model_from_train_dir(model_train_dir, device):
 def build_model(model_type, data_shapes, device, **kwargs):
     """
     Build a PyTorch model based on the specified model type.
-        model_type (str): The type of model to build. Supported types are C.NET_ARCH_LSTM, C.NET_ARCH_SIMPLE_FULLY_CONNECTED, and C.NET_ARCH_SIMPLE_CNN.
+        model_type (str): The type of model to build. Supported types are C.NET_ARCH_LSTM, C.NET_ARCH_SIMPLE_FULLY_CONNECTED, and C.NET_ARCH_CNN1D.
         data_shapes (dict): Dictionary containing the shapes of the input and target tensors.
         device (torch.device): The device (CPU or GPU) to run the model on.
         **kwargs: Additional keyword arguments for model-specific parameters.
@@ -391,9 +316,62 @@ def build_model(model_type, data_shapes, device, **kwargs):
         ValueError: If an unsupported model type is provided.
     """
 
-    _, n_turns, input_size = data_shapes["inputs_shape"]
     _, n_errors = data_shapes["targets_shape"]
-    _, n_turns, n_BPMs, n_planes = data_shapes["raw_input_tensors_shape"]
+    _, n_turns_raw, n_BPMs, n_planes = data_shapes["raw_input_tensors_shape"]
+
+    if model_type == C.NET_ARCH_CNN1D:
+        cnn1d_hidden_size = 512
+        num_layers = 6
+        kernel_size = 7
+        dilations = [1, 2, 4, 8, 16, 32]
+        add_batch_norm = True
+        add_dropout = False
+        dropout_p = 0.1
+        act = "relu"
+
+        if "hidden_size" in kwargs:
+            cnn1d_hidden_size = kwargs["hidden_size"]
+        if "num_layers" in kwargs:
+            num_layers = kwargs["num_layers"]
+        if "kernel_size" in kwargs:
+            kernel_size = kwargs["kernel_size"]
+        if "dilations" in kwargs:
+            dilations = kwargs["dilations"]
+        if "add_batch_norm" in kwargs:
+            add_batch_norm = kwargs["add_batch_norm"]
+        if "add_dropout" in kwargs:
+            add_dropout = kwargs["add_dropout"]
+        if "dropout_p" in kwargs:
+            dropout_p = kwargs["dropout_p"]
+        if "act" in kwargs:
+            act = kwargs["act"]
+
+        model = QuadErrorCorrectionCNN1D(
+            n_turns=n_turns_raw,
+            n_bpms=n_BPMs,
+            n_features=3,
+            hidden_size=cnn1d_hidden_size,
+            output_size=n_errors,
+            num_layers=num_layers,
+            kernel_size=kernel_size,
+            dilations=dilations,
+            add_batch_norm=add_batch_norm,
+            add_dropout=add_dropout,
+            dropout_p=dropout_p,
+            act=act,
+        )
+
+        setattr(model, "data_shapes", data_shapes)
+        model.to(device)
+        print("model number_of_parameters: ", number_of_parameters(model))
+        return model
+
+    inputs_shape = data_shapes["inputs_shape"]
+    if len(inputs_shape) == 4:
+        _, n_turns, n_bpms_from_input, n_feat_from_input = inputs_shape
+        input_size = n_bpms_from_input * n_feat_from_input
+    else:
+        _, n_turns, input_size = inputs_shape
 
     if model_type == C.NET_ARCH_LSTM:
         # LSTM model
@@ -411,8 +389,14 @@ def build_model(model_type, data_shapes, device, **kwargs):
         if "couple_xy" in kwargs:
             couple_xy = kwargs["couple_xy"]
 
-        if couple_xy:
+        inputs_shape = data_shapes["inputs_shape"]
+        if couple_xy and len(inputs_shape) == 4:
+            _, n_turns, n_bpms_lstm, n_feat = inputs_shape
+            input_size = n_bpms_lstm * n_feat
+        elif couple_xy:
             input_size = n_BPMs * (n_planes + 1)
+        else:
+            input_size = n_BPMs * n_planes
 
         model = QuadErrorCorrectionLSTM(
             input_size=input_size,
@@ -421,9 +405,8 @@ def build_model(model_type, data_shapes, device, **kwargs):
             output_size=n_errors,
             is_bidirectional=is_bidirectional,
             couple_xy=couple_xy,
-            n_BPMs=n_BPMs,
-            n_planes=n_planes,
         )
+        setattr(model, "couple_xy", couple_xy)
 
     elif model_type == C.NET_ARCH_SIMPLE_FULLY_CONNECTED:
         # Simple FCNN model
@@ -456,45 +439,6 @@ def build_model(model_type, data_shapes, device, **kwargs):
             add_batch_norm=add_batch_norm,
             add_dropout=add_dropout,
             down_s_factor=down_s_factor,
-        )
-
-    elif model_type == C.NET_ARCH_SIMPLE_CNN:
-        # Simple CNN model
-        cnn_hidden_size = 128
-        num_layers = 1
-        nb_heads = None
-        down_s_factor = 1
-        act = "relu"
-        target_height = 24
-        target_width = 8
-
-        if "hidden_size" in kwargs:
-            cnn_hidden_size = kwargs["hidden_size"]
-        if "num_layers" in kwargs:
-            num_layers = kwargs["num_layers"]
-        if "nb_heads" in kwargs:
-            nb_heads = kwargs["nb_heads"]
-        if "down_s_factor" in kwargs:
-            down_s_factor = kwargs["down_s_factor"]
-        if "act" in kwargs:
-            act = kwargs["act"]
-        if "target_height" in kwargs:
-            target_height = kwargs["target_height"]
-        if "target_width" in kwargs:
-            target_width = kwargs["target_width"]
-
-        model = SimpleCNN(
-            input_channels=n_planes,
-            hidden_size=cnn_hidden_size,
-            output_size=n_errors,
-            num_layers=num_layers,
-            nb_heads=None,  # Set to desired number of heads or None
-            add_batch_norm=True,
-            add_dropout=False,
-            down_s_factor=down_s_factor,  # downsampling factor
-            act=act,  # or 'elu'
-            target_height=target_height,
-            target_width=target_width,
         )
 
     else:
@@ -562,7 +506,7 @@ def compute_mae(outputs, targets, aggregate="mean"):
         return mae_per_output
     else:
         raise ValueError("Invalid aggregation method. Choose 'sum', 'mean', or 'none'.")
-    
+
 
 def get_scheduler(scheduler_type, optimizer, num_epochs):
     scheduler = None
@@ -675,7 +619,7 @@ def train_model(
         lr = 0.0001
     elif type(model) == QuadErrorCorrectionLSTM:
         lr = 0.001
-    elif type(model) == SimpleCNN:
+    elif type(model) == QuadErrorCorrectionCNN1D:
         lr = 0.001
 
     # -------------------------------
@@ -703,7 +647,7 @@ def train_model(
             scheduler_type = optim.lr_scheduler.CosineAnnealingLR
         else:
             scheduler_type = optim.lr_scheduler.CyclicLR
-            
+
     scheduler = get_scheduler(scheduler_type, optimizer, num_epochs)
 
     # Create a directory for the training session with the current date and time
@@ -798,7 +742,7 @@ def train_model(
             "nb_epoch_log": nb_epoch_log,
         },
     }
-    
+
     input_scaler = deserialize_minmax_scaler(data_sub_cfg["input_scaler_config"])
     target_scaler = deserialize_minmax_scaler(data_sub_cfg["target_scaler_config"])
 
@@ -828,7 +772,7 @@ def train_model(
             horizontal_tune_range=merged_config["horizontal_tune_range"],
             vertical_tune_range=merged_config["vertical_tune_range"],
             n_turns=1,  # We only need 1 turn to build the lattice and grab the matrices
-            verbose=True
+            verbose=True,
         )
         temp_sim.build_lattice()
         quad_cfg = merged_config.get("quad_errors", [])
@@ -864,23 +808,51 @@ def train_model(
     best_val_loss = float("inf")
 
     if use_pinn:
-        n_BPMs  = merged_config.get("n_FODO", model.data_shapes["raw_input_tensors_shape"][2])
+        n_BPMs = merged_config.get(
+            "n_FODO", model.data_shapes["raw_input_tensors_shape"][2]
+        )
         n_planes = model.data_shapes["raw_input_tensors_shape"][3]
 
     # sklearn inverse: X_original = (X_scaled - min_) / scale_
     # Target scaler: one entry per quad error output
-    target_scale = torch.tensor(target_scaler.scale_, dtype=torch.float32, device=device)
-    target_min   = torch.tensor(target_scaler.min_,   dtype=torch.float32, device=device)
+    target_scale = torch.tensor(
+        target_scaler.scale_, dtype=torch.float32, device=device
+    )
+    target_min = torch.tensor(target_scaler.min_, dtype=torch.float32, device=device)
 
     # Input scaler: fit on (N, n_planes=2), so index 1 = y-plane, shared across all BPMs
-    input_scale_y = torch.tensor([input_scaler.scale_[1]], dtype=torch.float32, device=device)
-    input_min_y   = torch.tensor([input_scaler.min_[1]],   dtype=torch.float32, device=device)
-    
+    input_scale_y = torch.tensor(
+        [input_scaler.scale_[1]], dtype=torch.float32, device=device
+    )
+    input_min_y = torch.tensor(
+        [input_scaler.min_[1]], dtype=torch.float32, device=device
+    )
+
     print("Scaling factors loaded:")
     print(f"  - Target scale: {target_scale}")
     print(f"  - Target min: {target_min}")
     print(f"  - Input scale (y-plane): {input_scale_y}")
     print(f"  - Input min (y-plane): {input_min_y}")
+
+    def get_y_plane_from_batch(batch_inputs, n_BPMs):
+        """Extract y-plane BPM data from batch inputs, handling 3D and 4D inputs.
+
+        For 3D input (B, T, n_BPMs*2): reshape to (B, T, n_BPMs, 2) and extract y-plane
+        For 4D input (B, T, n_BPMs, 2 or 3): extract y-plane directly (planes 0,1 used for physics)
+
+        Returns y-plane data of shape (B, T, n_BPMs)
+        """
+        if len(batch_inputs.shape) == 4:
+            # Already 4D - could be (B,T,n_BPMs,2) or (B,T,n_BPMs,3)
+            # Extract y-plane (index 1)
+            return batch_inputs[..., 1]
+        elif len(batch_inputs.shape) == 3:
+            # 3D - reshape assuming (B, T, n_BPMs * 2) -> (B, T, n_BPMs, 2)
+            return batch_inputs.view(
+                batch_inputs.size(0), batch_inputs.size(1), n_BPMs, 2
+            )[..., 1]
+        else:
+            raise ValueError(f"Unexpected batch_inputs shape: {batch_inputs.shape}")
 
     if use_pinn:
         # Precompute dataset-level mean BPM as approximation of nominal (no-error) orbit.
@@ -891,86 +863,101 @@ def train_model(
         with torch.no_grad():
             for batch_inputs, _ in train_loader:
                 batch_inputs = batch_inputs.to(device)
-                inputs_4d = batch_inputs.view(batch_inputs.size(0), batch_inputs.size(1), n_BPMs, n_planes)
-                y_scaled = inputs_4d[:, :, :, 1]          # (B, T, 8)
-                bpm_nominal_sum += y_scaled.mean(dim=1).sum(dim=0)   # accumulate per-BPM mean
+                y_scaled = get_y_plane_from_batch(batch_inputs, n_BPMs)
+                bpm_nominal_sum += y_scaled.mean(dim=1).sum(
+                    dim=0
+                )  # accumulate per-BPM mean
                 n_total += batch_inputs.size(0)
 
         # --- GROUND TRUTH PHYSICS DIAGNOSTIC ---
         print("\n--- Running Ground Truth Physics Diagnostic ---")
         with torch.no_grad():
             for batch_inputs, batch_targets in train_loader:
-                batch_inputs, batch_targets = batch_inputs.to(device), batch_targets.to(device)
-                
+                batch_inputs, batch_targets = (
+                    batch_inputs.to(device),
+                    batch_targets.to(device),
+                )
+
                 # 1. Unscale PERFECT True Targets
                 true_phys = (batch_targets - target_min) / target_scale
-                
+
                 # 2. Project using R matrix
                 true_bpm_est_phys = torch.matmul(true_phys, R_matrix.t())
                 true_bpm_est_scaled = true_bpm_est_phys * input_scale_y
-                
+
                 # 3. Unscale True Inputs
-                inputs_4d = batch_inputs.view(batch_inputs.size(0), batch_inputs.size(1), n_BPMs, n_planes)
-                x_actual = inputs_4d[:, :, :, 1].mean(dim=1)
+                y_scaled = get_y_plane_from_batch(batch_inputs, n_BPMs)
+                x_actual = y_scaled.mean(dim=1)
                 x_actual_deviation = x_actual - input_min_y
-                
+
                 # 4. Check the Error
                 gt_phys_loss = criterion(true_bpm_est_scaled, x_actual_deviation).item()
-                print(f"[DIAGNOSTIC] Physics Loss of PERFECT Ground Truth: {gt_phys_loss:.6f}")
-                break # Only need to check one batch
+                print(
+                    f"[DIAGNOSTIC] Physics Loss of PERFECT Ground Truth: {gt_phys_loss:.6f}"
+                )
+                break  # Only need to check one batch
         print("----------------------------------------------\n")
 
     if use_pinn:
-        print("\n" + "="*65)
+        print("\n" + "=" * 65)
         print("🔍 PRE-TRAINING DIAGNOSTIC: INTRINSIC TRACKING NOISE VERIFIER")
-        print("="*65)
-        
+        print("=" * 65)
+
         # We will check the first 5 batches to establish the baseline noise floor
         num_batches_to_check = 5
         total_mse_physical = 0.0
         total_bpm_samples = 0
-        
+
         with torch.no_grad():
             for i, (batch_inputs, batch_targets) in enumerate(train_loader):
                 if i >= num_batches_to_check:
                     break
-                    
+
                 batch_inputs = batch_inputs.to(device)
                 batch_targets = batch_targets.to(device)
-                
+
                 # 1. Unscale True Targets (Quad Misalignments) to physical meters
-                true_quad_offsets_phys = (batch_targets - target_min) / target_scale  # (Batch, 6)
-                
+                true_quad_offsets_phys = (
+                    batch_targets - target_min
+                ) / target_scale  # (Batch, 6)
+
                 # 2. Compute Analytical Orbit using R_matrix
                 # R_matrix is (8, 6). Project offsets to get expected BPM readings
-                analytical_bpm_phys = torch.matmul(true_quad_offsets_phys, R_matrix.t())  # (Batch, 8)
-                
+                analytical_bpm_phys = torch.matmul(
+                    true_quad_offsets_phys, R_matrix.t()
+                )  # (Batch, 8)
+
                 # 3. Extract and Unscale True Inputs (Simulated BPMs) to physical meters
-                inputs_4d = batch_inputs.view(batch_inputs.size(0), batch_inputs.size(1), n_BPMs, n_planes)
-                y_scaled = inputs_4d[:, :, :, 1]          # Vertical plane
-                x_actual_scaled = y_scaled.mean(dim=1)    # Turn-average (Batch, 8)
-                
+                y_scaled = get_y_plane_from_batch(batch_inputs, n_BPMs)
+                x_actual_scaled = y_scaled.mean(dim=1)  # Turn-average (Batch, 8)
+
                 actual_bpm_phys = (x_actual_scaled - input_min_y) / input_scale_y
-                
+
                 # 4. Compute Residuals (The un-cancelled tracking/statistical noise)
                 residuals = actual_bpm_phys - analytical_bpm_phys
-                
+
                 # 5. Accumulate MSE in physical meters squared
-                batch_mse = torch.sum(residuals ** 2).item()
+                batch_mse = torch.sum(residuals**2).item()
                 total_mse_physical += batch_mse
                 total_bpm_samples += residuals.numel()
-                
+
         # Compute final physical RMS noise
         mean_mse_physical = total_mse_physical / total_bpm_samples
         rms_noise_meters = np.sqrt(mean_mse_physical)
         rms_noise_microns = rms_noise_meters * 1e6
-        
-        print(f"Verified over {num_batches_to_check} batches ({total_bpm_samples // 8} simulated orbits).")
+
+        print(
+            f"Verified over {num_batches_to_check} batches ({total_bpm_samples // 8} simulated orbits)."
+        )
         print(f"Physical Mean Squared Error: {mean_mse_physical:.8e} m²")
         print(f"Intrinsic RMS Tracking Noise: {rms_noise_microns:.2f} μm")
         print("-" * 65)
-        print("NOTE: Your Validation PINN loss (L_phys) will plateau exactly at this noise floor.")
-        print("      Do NOT expect L_phys to reach 0.0000. This verifies the intrinsic measurement")
+        print(
+            "NOTE: Your Validation PINN loss (L_phys) will plateau exactly at this noise floor."
+        )
+        print(
+            "      Do NOT expect L_phys to reach 0.0000. This verifies the intrinsic measurement"
+        )
         print("      limit of your 300-particle, 100-turn averaged dataset.")
         print("=============================================================\n")
 
@@ -997,33 +984,37 @@ def train_model(
             if use_pinn:
                 # 1. Unscale predicted offsets to physical units (stay in torch for gradients)
                 # sklearn inverse: X_original = (X_scaled - min_) / scale_
-                outputs_physical = (outputs - target_min) / target_scale              # (B, n_errors), meters
+                outputs_physical = (
+                    outputs - target_min
+                ) / target_scale  # (B, n_errors), meters
 
                 # 2. Project using R_matrix to get estimated BPM readings in physical units
-                x_bpm_estimated_physical = torch.matmul(outputs_physical, R_matrix.t())  # (B, n_BPMs), meters
+                x_bpm_estimated_physical = torch.matmul(
+                    outputs_physical, R_matrix.t()
+                )  # (B, n_BPMs), meters
 
                 # 3. Scale the estimated deviation to match L_data units
                 # Deviations use only scale_, not min_ (constant offset cancels between bpm_with_error and bpm_nominal)
-                x_bpm_estimated_scaled = x_bpm_estimated_physical * input_scale_y  # (B, n_BPMs)
+                x_bpm_estimated_scaled = (
+                    x_bpm_estimated_physical * input_scale_y
+                )  # (B, n_BPMs)
 
                 # 4. Actual vertical BPM readings are already scaled in [-1,1]
-                inputs_4d = batch_inputs.view(batch_inputs.size(0), batch_inputs.size(1), n_BPMs, n_planes)
-                y_scaled  = inputs_4d[:, :, :, 1]          # (B, T, 8) vertical plane, already in [-1,1]
-                x_actual  = y_scaled.mean(dim=1)            # (B, 8) average over turns
+                y_scaled = get_y_plane_from_batch(batch_inputs, n_BPMs)
+                x_actual = y_scaled.mean(dim=1)  # (B, 8) average over turns
 
                 # 5. Physics loss: R @ errors = bpm_with_error - bpm_nominal
                 # x_bpm_estimated_scaled is already the error-driven deviation (no nominal term)
                 # Subtract precomputed nominal from actual readings to isolate error contribution
                 # x_actual_deviation = x_actual - bpm_nominal_scaled      # (B, n_BPMs)
-                
-                # The physical nominal orbit is 0.0. 
+
+                # The physical nominal orbit is 0.0.
                 # In scaled space, 0.0 is exactly equal to input_min_y.
                 x_actual_deviation = x_actual - input_min_y
 
-
                 L_phys = criterion(x_bpm_estimated_scaled, x_actual_deviation)
                 loss = L_data + pinn_lambda * L_phys
-                
+
                 # Update Accumulators for logging
                 train_data_loss += L_data.item() * batch_inputs.size(0)
                 train_phys_loss += L_phys.item() * batch_inputs.size(0)
@@ -1062,22 +1053,27 @@ def train_model(
 
                 if use_pinn:
                     # 1. Unscale predicted offsets to physical units
-                    outputs_physical = (outputs - target_min) / target_scale              # (B, n_errors), meters
+                    outputs_physical = (
+                        outputs - target_min
+                    ) / target_scale  # (B, n_errors), meters
 
                     # 2. Project using R_matrix to get estimated BPM readings in physical units
-                    x_bpm_estimated_physical = torch.matmul(outputs_physical, R_matrix.t())  # (B, n_BPMs), meters
+                    x_bpm_estimated_physical = torch.matmul(
+                        outputs_physical, R_matrix.t()
+                    )  # (B, n_BPMs), meters
 
                     # 3. Scale the estimated deviation — no min_ for deviations
-                    x_bpm_estimated_scaled = x_bpm_estimated_physical * input_scale_y  # (B, n_BPMs)
+                    x_bpm_estimated_scaled = (
+                        x_bpm_estimated_physical * input_scale_y
+                    )  # (B, n_BPMs)
 
                     # 4. Actual vertical BPM readings are already scaled in [-1,1]
-                    inputs_4d = batch_inputs.view(batch_inputs.size(0), batch_inputs.size(1), n_BPMs, n_planes)
-                    y_scaled  = inputs_4d[:, :, :, 1]          # (B, T, 8) vertical plane, already in [-1,1]
-                    x_actual  = y_scaled.mean(dim=1)            # (B, 8) average over turns
+                    y_scaled = get_y_plane_from_batch(batch_inputs, n_BPMs)
+                    x_actual = y_scaled.mean(dim=1)  # (B, 8) average over turns
 
                     # 5. Physics loss: same nominal subtraction as training
                     # x_actual_deviation = x_actual - bpm_nominal_scaled  # (B, n_BPMs)
-                    # The physical nominal orbit is 0.0. 
+                    # The physical nominal orbit is 0.0.
                     # In scaled space, 0.0 is exactly equal to input_min_y.
                     x_actual_deviation = x_actual - input_min_y
 
@@ -1085,7 +1081,7 @@ def train_model(
                     loss = L_data + pinn_lambda * L_phys
                     val_phys_loss += L_phys.item() * batch_inputs.size(0)
                     val_data_loss += L_data.item() * batch_inputs.size(0)
-                    
+
                 else:
                     loss = L_data
                     val_data_loss = 0.0

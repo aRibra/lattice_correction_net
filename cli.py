@@ -89,7 +89,7 @@ Examples:
         choices=[
             C.NET_ARCH_LSTM,
             C.NET_ARCH_SIMPLE_FULLY_CONNECTED,
-            C.NET_ARCH_SIMPLE_CNN,
+            C.NET_ARCH_CNN1D,
         ],
         default=C.NET_ARCH_LSTM,
         help=f"Model architecture to use (default: {C.NET_ARCH_LSTM})",
@@ -365,7 +365,7 @@ Examples:
         choices=[
             C.NET_ARCH_LSTM,
             C.NET_ARCH_SIMPLE_FULLY_CONNECTED,
-            C.NET_ARCH_SIMPLE_CNN,
+            C.NET_ARCH_CNN1D,
         ],
         default=C.NET_ARCH_LSTM,
         help=f"Model architecture to use (default: {C.NET_ARCH_LSTM})",
@@ -462,6 +462,7 @@ def cmd_train(args):
         test_size=args.test_size,
         batch_size=args.batch_size,
         model_arch=args.model_arch,
+        couple_xy=args.couple_xy,
     )
 
     # Build model
@@ -550,7 +551,11 @@ def cmd_evaluate(args):
         )
 
         train_loader, val_loader, _ = prepare_data_for_training(
-            sim_data, test_size=0.10, batch_size=16, model_arch=model_arch
+            sim_data,
+            test_size=0.10,
+            batch_size=16,
+            model_arch=model_arch,
+            couple_xy=getattr(model, "couple_xy", False),
         )
 
         # Run simulation-based evaluation with error sources
@@ -594,7 +599,11 @@ def cmd_evaluate(args):
             )
 
             train_loader, val_loader, _ = prepare_data_for_training(
-                sim_data, test_size=0.10, batch_size=16, model_arch=model_arch
+                sim_data,
+                test_size=0.10,
+                batch_size=16,
+                model_arch=model_arch,
+                couple_xy=getattr(model, "couple_xy", False),
             )
 
             # Run inference
@@ -665,7 +674,11 @@ def cmd_benchmark(args):
         )
 
         train_loader, val_loader, _ = prepare_data_for_training(
-            sim_data, test_size=0.10, batch_size=16, model_arch=model_arch
+            sim_data,
+            test_size=0.10,
+            batch_size=16,
+            model_arch=model_arch,
+            couple_xy=getattr(model, "couple_xy", False),
         )
     else:
         # bpm_shift uses existing data
@@ -675,7 +688,11 @@ def cmd_benchmark(args):
                 "model_arch", C.NET_ARCH_LSTM
             )
             train_loader, val_loader, _ = prepare_data_for_training(
-                sim_data, test_size=0.10, batch_size=16, model_arch=model_arch
+                sim_data,
+                test_size=0.10,
+                batch_size=16,
+                model_arch=model_arch,
+                couple_xy=getattr(model, "couple_xy", False),
             )
         else:
             print(
@@ -712,6 +729,7 @@ def cmd_benchmark(args):
 
 def cmd_accumulated_training(args):
     import numpy as np
+
     torch.manual_seed(42)  # For reproducibility
     torch.cuda.manual_seed(42)
     np.random.seed(42)  # For reproducibility
@@ -802,7 +820,9 @@ def cmd_accumulated_training(args):
     print("\nValidation MAE (unscaled):")
     for ii, accc in accuracies_val.items():
         mean_unscaled = accc * mean_scaler
-        print(f"{len(accuracies_val)}, {mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
+        print(
+            f"{len(accuracies_val)}, {mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}"
+        )
         benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_val_mae_unscaled"][
             ii
         ] = mean_unscaled
@@ -810,7 +830,10 @@ def cmd_accumulated_training(args):
     print("\nTraining MAEs (unscaled):")
     for ii, accc in accuracies_train.items():
         mean_unscaled = accc * mean_scaler
-        print(f"{len(accuracies_train)}, {mean_unscaled:.7f}", f"{mean_unscaled * 1e6:.2f}")
+        print(
+            f"{len(accuracies_train)}, {mean_unscaled:.7f}",
+            f"{mean_unscaled * 1e6:.2f}",
+        )
         benchmark_results[C.KEY_ACCUMULATED_DATASETS]["results_train_mae_unscaled"][
             ii
         ] = mean_unscaled

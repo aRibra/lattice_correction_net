@@ -17,5 +17,5 @@ class Constants:
     KEY_ACCUMULATED_DATASETS = 'accumulated_datasets'
     
     NET_ARCH_SIMPLE_FULLY_CONNECTED = 'SimpleFullyConnectedNetwork'
-    NET_ARCH_SIMPLE_CNN = 'SimpleCNN'
     NET_ARCH_LSTM = 'QuadErrorCorrectionLSTM'
+    NET_ARCH_CNN1D = 'QuadErrorCorrectionCNN1D'
