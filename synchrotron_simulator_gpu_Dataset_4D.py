@@ -3,7 +3,8 @@
 import os
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 import traceback
@@ -457,6 +458,7 @@ class SynchrotronSimulator:
         figs_save_dir="figs",
         correct_injection_offset=False,
         k_errors=None,
+        bpm_mode="after_focusing",
     ):
         """
         Initialize the Synchrotron Simulator.
@@ -504,8 +506,16 @@ class SynchrotronSimulator:
                 where k_delta is sampled once per simulation from k_systemic_drift_fraction_range,
                 and k_noise is sampled independently for each quad from k_stochastic_jitter_fraction_range.
                 Default: None (no k errors).
+            bpm_mode (str): Specifies where to record BPM readings within each FODO cell.
+                Options:
+                - "after_focusing": Record at the exit of each cell (after focusing quad). Default.
+                - "after_defocusing": Record at the midpoint of each cell (after defocusing quad).
+                - "both": Record at both positions (2 BPMs per cell).
+                Default: "after_focusing"
         """
         self.k_errors = k_errors
+        self.bpm_mode = bpm_mode
+        print("UNIQUE IDENTIFIER self.bpm_mode", self.bpm_mode)
         self._k_delta = 0.0
         self._k_noise_map = {}
         self._k_actual_map = {}
@@ -574,6 +584,11 @@ class SynchrotronSimulator:
         self.n_Dipoles = n_Dipoles
         self.total_FODO_length = None
         self.L_drift = None
+        self.n_BPMs_total = (
+            self.n_FODO
+            if self.bpm_mode in ("after_focusing", "after_defocusing")
+            else 2 * self.n_FODO
+        )
 
         # self.Mx_lattice_cell = []
         # self.My_lattice_cell = []
@@ -1146,7 +1161,6 @@ class SynchrotronSimulator:
                     # define a small function to build that 4x4 "kick."
 
                     for quad_err in self.quad_errors:
-                        
                         if (
                             quad_err.FODO_index == cell_index
                             and quad_err.quad_type == quad_type_str
@@ -1381,88 +1395,105 @@ class SynchrotronSimulator:
                     f"Warning: M_lattice_4x4[{idx}] has determinant={detM:.6f}, not ~1.0 => possibly non-symplectic."
                 )
 
-    def compute_response_matrix_y(self, quad_errors_cfg=None, device='cpu'):
+    def compute_response_matrix_y(self, quad_errors_cfg=None, device="cpu"):
         """
         Computes the EXACT vertical orbit response matrix R_y (BPMs x Quads)
         by extracting the closed-orbit response directly from the 4D lattice matrices.
         This guarantees a 0.000000 loss match with the tracking simulator.
+
+        For bpm_mode="both", computes response at both BPM positions (2*n_FODO rows).
+        For single BPM modes, computes response at only that position (n_FODO rows).
         """
         if not getattr(self, "M_lattice_4x4", None):
             raise ValueError("Lattice not built. Call build_lattice() first.")
 
-        n_BPMs = self.n_FODO
-        
+        if self.bpm_mode == "both":
+            n_BPMs = 2 * self.n_FODO
+        else:
+            n_BPMs = self.n_FODO
+
         if quad_errors_cfg is None:
             if self.quad_errors:
-                quad_errors_cfg = [{"FODO_index": q.FODO_index, "quad_type": q.quad_type} for q in self.quad_errors]
+                quad_errors_cfg = [
+                    {"FODO_index": q.FODO_index, "quad_type": q.quad_type}
+                    for q in self.quad_errors
+                ]
             else:
-                quad_errors_cfg = [{"FODO_index": ci, "quad_type": "defocusing"} for ci in range(1, self.n_FODO)]
+                quad_errors_cfg = [
+                    {"FODO_index": ci, "quad_type": "defocusing"}
+                    for ci in range(1, self.n_FODO)
+                ]
 
         n_quads = len(quad_errors_cfg)
         R_y = np.zeros((n_BPMs, n_quads), dtype=np.float64)
 
-        # 1. Calculate the ideal 1-turn matrix (No errors)
         M_ring = np.identity(4)
         for M_elem in self.M_lattice_4x4:
-            M_ring = M_elem @ M_ring  # Forward tracking multiplication
-            
-        # The Closed Orbit Operator: (I - M_ring)^-1
+            M_ring = M_elem @ M_ring
+
         I_minus_M_inv = np.linalg.inv(np.identity(4) - M_ring)
 
-        # 2. Extract the exact response for each target quadrupole
         for j, q_cfg in enumerate(quad_errors_cfg):
             ci = q_cfg["FODO_index"]
             qt = q_cfg["quad_type"].lower()
-            
+
             target_idx = None
             for idx, elem in enumerate(self.lattice_elements_positions):
                 if elem["cell_index"] == ci and elem["element_type"] == "Quad":
                     is_focusing = "Focusing" in elem["description"]
-                    if (qt == "focusing" and is_focusing) or (qt == "defocusing" and not is_focusing):
+                    if (qt == "focusing" and is_focusing) or (
+                        qt == "defocusing" and not is_focusing
+                    ):
                         target_idx = idx
                         break
-            
+
             if target_idx is not None:
-                # Create a 1.0 meter unit vertical offset
-                delta = 1.0 
-                
-                # Get the 4D matrix of this specific Quadrupole
+                delta = 1.0
                 M_quad = self.M_lattice_4x4[target_idx]
-                
-                # Calculate the EXACT effective kick (angle + spatial shift) exiting the quad
-                # D = (I - M) * [x, x', y, y']^T
                 offset_vec = np.array([0.0, 0.0, delta, 0.0])
                 D_local = (np.identity(4) - M_quad) @ offset_vec
-                
-                # Propagate this kick from the Quad to the END of the ring (s = L_ring)
+
                 D_ring = D_local
                 for idx in range(target_idx + 1, len(self.M_lattice_4x4)):
                     D_ring = self.M_lattice_4x4[idx] @ D_ring
-                    
-                # Calculate the exact Closed Orbit at the start of the ring (s=0)
+
                 X_co_s0 = I_minus_M_inv @ D_ring
-                
-                # Propagate the closed orbit to every BPM and record the Y position
+
                 X_current = X_co_s0
                 global_idx = 0
                 bpm_idx = 0
-                
-                for n_elems in self.len_per_cell_list:
-                    
-                    # 1. Propagate through the elements of the cell FIRST
-                    for _ in range(n_elems):
+
+                for cell_idx, n_elems in enumerate(self.len_per_cell_list):
+                    elem_in_cell = 0
+                    while elem_in_cell < n_elems:
                         M = self.M_lattice_4x4[global_idx]
                         X_current = M @ X_current
-                        
-                        # CRITICAL: Apply the quad's error kick exactly as the beam exits it
+
                         if global_idx == target_idx:
                             X_current = X_current + D_local
-                            
+
                         global_idx += 1
-                        
-                    # 2. Record Y at the EXIT of the cell (matching your simulator perfectly)
-                    R_y[bpm_idx, j] = X_current[2]
-                    bpm_idx += 1
+                        elem_in_cell += 1
+
+                        if elem_in_cell == 4 and self.bpm_mode in (
+                            "after_defocusing",
+                            "both",
+                        ):
+                            idx_to_use = (
+                                2 * cell_idx if self.bpm_mode == "both" else cell_idx
+                            )
+                            R_y[idx_to_use, j] = X_current[2]
+                            bpm_idx += 1
+
+                    if self.bpm_mode in ("after_focusing", "both"):
+                        idx_to_use = (
+                            2 * cell_idx + 1 if self.bpm_mode == "both" else cell_idx
+                        )
+                        R_y[idx_to_use, j] = X_current[2]
+                        bpm_idx += 1
+                    else:
+                        R_y[cell_idx, j] = X_current[2]
+                        bpm_idx += 1
             else:
                 print(f"[WARNING] Could not find Target Quad: Cell {ci}, Type {qt}")
 
@@ -1924,7 +1955,7 @@ class SynchrotronSimulator:
 
         # BPM arrays - use memory-mapped files if requested
         if self.n_FODO:
-            shape = (self.num_particles, self.n_turns, self.n_FODO)
+            shape = (self.num_particles, self.n_turns, self.n_BPMs_total)
 
             if self.use_memmap:
                 # Create unique filename prefix for this simulation
@@ -1950,7 +1981,7 @@ class SynchrotronSimulator:
 
                 # Also create a regular array for 's' if needed, or skip it
                 self.bpm_readings["s"] = np.zeros(
-                    (self.num_particles, self.n_turns, self.n_FODO)
+                    (self.num_particles, self.n_turns, self.n_BPMs_total)
                 )
 
                 if self.verbose:
@@ -2025,10 +2056,36 @@ class SynchrotronSimulator:
 
                         # elem_idx_global += 1`
 
-                    self.bpm_readings["x"][p_idx, turn, cell_index] = X_4d[0]
-                    self.bpm_readings["y"][p_idx, turn, cell_index] = X_4d[2]
-                    self.bpm_readings["xp"][p_idx, turn, cell_index] = X_4d[1]
-                    self.bpm_readings["yp"][p_idx, turn, cell_index] = X_4d[3]
+                        if elem_in_cell == 3 and self.bpm_mode in (
+                            "after_defocusing",
+                            "both",
+                        ):
+                            bpm_idx = (
+                                2 * cell_index
+                                if self.bpm_mode == "both"
+                                else cell_index
+                            )
+                            self.bpm_readings["x"][p_idx, turn, bpm_idx] = X_4d[0]
+                            self.bpm_readings["y"][p_idx, turn, bpm_idx] = X_4d[2]
+                            self.bpm_readings["xp"][p_idx, turn, bpm_idx] = X_4d[1]
+                            self.bpm_readings["yp"][p_idx, turn, bpm_idx] = X_4d[3]
+
+                    if self.bpm_mode in ("after_focusing", "both"):
+                        bpm_idx = (
+                            2 * cell_index if self.bpm_mode == "both" else cell_index
+                        )
+                        bpm_idx_after = (
+                            bpm_idx + 1 if self.bpm_mode == "both" else bpm_idx
+                        )
+                        self.bpm_readings["x"][p_idx, turn, bpm_idx_after] = X_4d[0]
+                        self.bpm_readings["y"][p_idx, turn, bpm_idx_after] = X_4d[2]
+                        self.bpm_readings["xp"][p_idx, turn, bpm_idx_after] = X_4d[1]
+                        self.bpm_readings["yp"][p_idx, turn, bpm_idx_after] = X_4d[3]
+                    else:
+                        self.bpm_readings["x"][p_idx, turn, cell_index] = X_4d[0]
+                        self.bpm_readings["y"][p_idx, turn, cell_index] = X_4d[2]
+                        self.bpm_readings["xp"][p_idx, turn, cell_index] = X_4d[1]
+                        self.bpm_readings["yp"][p_idx, turn, cell_index] = X_4d[3]
 
             init_np[p_idx] = X_4d
 
@@ -2064,16 +2121,16 @@ class SynchrotronSimulator:
         )
 
         d_bpm_x = cuda.device_array(
-            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+            (self.num_particles, self.n_turns, self.n_BPMs_total), dtype=np.float64
         )
         d_bpm_y = cuda.device_array(
-            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+            (self.num_particles, self.n_turns, self.n_BPMs_total), dtype=np.float64
         )
         d_bpm_xp = cuda.device_array(
-            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+            (self.num_particles, self.n_turns, self.n_BPMs_total), dtype=np.float64
         )
         d_bpm_yp = cuda.device_array(
-            (self.num_particles, self.n_turns, self.n_FODO), dtype=np.float64
+            (self.num_particles, self.n_turns, self.n_BPMs_total), dtype=np.float64
         )
 
         threads_per_block = 256  # multiples of 32; max is 1024 (for Turing arch., compute capability 7.5 and above)
@@ -2091,6 +2148,7 @@ class SynchrotronSimulator:
             bpm_y,
             bpm_xp,
             bpm_yp,
+            bpm_mode_val,
         ):
             pid = cuda.grid(1)
             if pid >= d_states.shape[0]:
@@ -2147,17 +2205,39 @@ class SynchrotronSimulator:
                         x2 = y2 + D2
                         x3 = y3 + D3
 
-                    # Record BPM readings
-                    bpm_x[pid, turn, cell_idx] = x0
-                    bpm_y[pid, turn, cell_idx] = x2
-                    bpm_xp[pid, turn, cell_idx] = x1
-                    bpm_yp[pid, turn, cell_idx] = x3
+                        if elem_in_cell == 3 and bpm_mode_val > 0:
+                            if bpm_mode_val == 2:
+                                bpm_idx = 2 * cell_idx
+                            else:
+                                bpm_idx = cell_idx
+                            bpm_x[pid, turn, bpm_idx] = x0
+                            bpm_y[pid, turn, bpm_idx] = x2
+                            bpm_xp[pid, turn, bpm_idx] = x1
+                            bpm_yp[pid, turn, bpm_idx] = x3
+
+                    if bpm_mode_val == 2:
+                        bpm_idx = 2 * cell_idx + 1
+                    elif bpm_mode_val == 0:
+                        bpm_idx = cell_idx
+                    if bpm_mode_val > 0:
+                        bpm_x[pid, turn, bpm_idx] = x0
+                        bpm_y[pid, turn, bpm_idx] = x2
+                        bpm_xp[pid, turn, bpm_idx] = x1
+                        bpm_yp[pid, turn, bpm_idx] = x3
+                    else:
+                        bpm_x[pid, turn, cell_idx] = x0
+                        bpm_y[pid, turn, cell_idx] = x2
+                        bpm_xp[pid, turn, cell_idx] = x1
+                        bpm_yp[pid, turn, cell_idx] = x3
 
             # Write back final state
             d_states[pid, 0] = x0
             d_states[pid, 1] = x1
             d_states[pid, 2] = x2
             d_states[pid, 3] = x3
+
+        bpm_mode_map = {"after_focusing": 0, "after_defocusing": 1, "both": 2}
+        bpm_mode_val = bpm_mode_map.get(self.bpm_mode, 0)
 
         # Launch kernel
         simulate_kernel_4D[blocks_per_grid, threads_per_block](
@@ -2171,6 +2251,7 @@ class SynchrotronSimulator:
             d_bpm_y,
             d_bpm_xp,
             d_bpm_yp,
+            bpm_mode_val,
         )
         cuda.synchronize()
 
@@ -2186,125 +2267,111 @@ class SynchrotronSimulator:
         if nb_particles == 0:
             return
 
-        # Correctly specify the device with an index for the GTX 2060
         device_idx = 0
-        device = torch.device(
-            f"cuda:{device_idx}" if torch.cuda.is_available() else "cpu"
-        )
+        device = torch.device(f"cuda:{device_idx}" if torch.cuda.is_available() else "cpu")
 
-        # 1. DYNAMIC STRATEGY INFERENCE (VRAM & RAM Check)
-        chunk_size = (
-            self.max_iter_per_infer if self.max_iter_per_infer > 0 else self.n_turns
-        )
-
-        # Calculate estimated VRAM for one GPU chunk buffer (float64 = 8 bytes)
-        # Total memory for 4 coordinates: (particles * chunk_turns * n_FODO * 4 coordinates * 8 bytes)
+        chunk_size = self.max_iter_per_infer if self.max_iter_per_infer > 0 else self.n_turns
         vram_req_bytes = nb_particles * chunk_size * self.n_FODO * 4 * 8
-
-        use_streaming = True  # Default to the stable STREAMING approach
+        use_streaming = True
 
         if device.type.startswith("cuda"):
-            # Get free and total VRAM in bytes for the specific device index
             free_vram, total_vram = torch.cuda.mem_get_info(device_idx)
-
-            # Check System RAM (psutil) to see if we can even hold the full BPM array in memory
-            # Total BPM data = particles * n_turns * n_FODO * 4 * 8
-            # times 8 bytes because we are using float64)
             total_data_req_bytes = nb_particles * self.n_turns * self.n_FODO * 4 * 8
             available_ram = psutil.virtual_memory().available
 
-            # Use BUFFERED only if VRAM requirement is < 90% of FREE VRAM
             if vram_req_bytes < (free_vram * 0.95):
                 use_streaming = False
                 if self.verbose:
-                    print(
-                        f"[Strategy] VRAM Req: {vram_req_bytes / 1e6:.1f}MB | Available: {free_vram / 1e6:.1f}MB. Strategy: BUFFERED."
-                    )
+                    print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB | Available: {free_vram/1e6:.1f}MB. Strategy: BUFFERED.")
             else:
                 if self.verbose:
-                    print(
-                        f"[Strategy] VRAM Req: {vram_req_bytes / 1e6:.1f}MB exceeds safety. Strategy: STREAMING."
-                    )
+                    print(f"[Strategy] VRAM Req: {vram_req_bytes/1e6:.1f}MB exceeds safety. Strategy: STREAMING.")
 
-            # Force Memmap if the total simulation exceeds 90% of available System RAM
-            print(
-                f"[PSUTIL] RAM Req: {total_data_req_bytes / 1e9:.1f}GB | Available: ({available_ram / 1e9:.1f}GB). "
-            )
+            print(f"[PSUTIL] RAM Req: {total_data_req_bytes/1e9:.1f}GB | Available: ({available_ram/1e9:.1f}GB).")
             if total_data_req_bytes > (available_ram * 0.93) and not self.use_memmap:
                 if self.verbose:
-                    print(
-                        f"[Warning] Total data ({total_data_req_bytes / 1e9:.1f}GB) exceeds RAM. Forcing Memmap."
-                    )
+                    print(f"[Warning] Total data ({total_data_req_bytes/1e9:.1f}GB) exceeds RAM. Forcing Memmap.")
                 self.use_memmap = True
 
-        # 2. INITIALIZATION & PRE-COMPUTATION
+        # --- Initial states ---
         init_np = np.array(initial_states, dtype=np.float64)
         if self.correct_injection_offset and x_co is not None and y_co is not None:
-            init_np[:, 0] += x_co[0]
-            init_np[:, 1] += x_co[1]
-            init_np[:, 2] += y_co[0]
-            init_np[:, 3] += y_co[1]
-
+            init_np[:, 0] += x_co[0];  init_np[:, 1] += x_co[1]
+            init_np[:, 2] += y_co[0];  init_np[:, 3] += y_co[1]
         states = torch.from_numpy(init_np).to(device).to(torch.float64)
 
-        # Pre-calculate cell matrices using the helper logic
-        cell_M_stack, cell_D_stack = self._precompute_cell_matrices(device)
+        # --- Precompute two half-cell matrices per cell ---
+        M_h1, D_h1, M_h2, D_h2 = self._precompute_cell_matrices(device)
 
-        # Allocate Output (respects self.use_memmap forced above if necessary)
+        # --- Allocate BPM output arrays ---
         bpm_x, bpm_y, bpm_xp, bpm_yp = self._allocate_bpm_outputs(nb_particles)
 
-        # 3. SIMULATION LOOP
+        # --- Helper: record one BPM snapshot ---
+        def record(bpm_col, turn_idx):
+            bpm_x[:, turn_idx, bpm_col]  = states[:, 0].cpu().numpy()
+            bpm_xp[:, turn_idx, bpm_col] = states[:, 1].cpu().numpy()
+            bpm_y[:, turn_idx, bpm_col]  = states[:, 2].cpu().numpy()
+            bpm_yp[:, turn_idx, bpm_col] = states[:, 3].cpu().numpy()
+
+        def record_buf(buf, t_rel, bpm_col):
+            buf[:, t_rel, bpm_col, :] = states
+
+        # --- Simulation loop ---
         n_chunks = (self.n_turns + chunk_size - 1) // chunk_size
-        log_indices = np.linspace(0, n_chunks - 1, 11, dtype=int)
+        log_indices = set(np.linspace(0, n_chunks - 1, 11, dtype=int))
 
         for c_idx in range(n_chunks):
             t_start = c_idx * chunk_size
-            t_end = min(t_start + chunk_size, self.n_turns)
+            t_end   = min(t_start + chunk_size, self.n_turns)
             cur_len = t_end - t_start
 
             if self.verbose and c_idx in log_indices:
-                print(
-                    f"[PyTorch GPU] {('STREAMING' if use_streaming else 'BUFFERED')} {int(100 * c_idx / n_chunks)}%"
-                )
+                print(f"[PyTorch GPU] {'STREAMING' if use_streaming else 'BUFFERED'} {int(100*c_idx/n_chunks)}%")
 
             if not use_streaming:
-                # BUFFERED-in-gpu Logic: High speed for fits-in-memory data
+                # ── BUFFERED ───────────────────────────────────────────────
                 buf = torch.zeros(
-                    (nb_particles, cur_len, self.n_FODO, 4),
-                    device=device,
-                    dtype=torch.float64,
+                    (nb_particles, cur_len, self.n_BPMs_total, 4),
+                    device=device, dtype=torch.float64,
                 )
                 for t_rel in range(cur_len):
-                    for cell_idx in range(self.n_FODO):
-                        states = (
-                            torch.matmul(states, cell_M_stack[cell_idx])
-                            + cell_D_stack[cell_idx]
-                        )
-                        buf[:, t_rel, cell_idx, :] = states
+                    for ci in range(self.n_FODO):
+                        # First half → exit of defocusing quad
+                        states = torch.matmul(states, M_h1[ci]) + D_h1[ci]
+                        if self.bpm_mode in ("after_defocusing", "both"):
+                            bpm_col = 2 * ci if self.bpm_mode == "both" else ci
+                            record_buf(buf, t_rel, bpm_col)
 
-                # Batch transfer to CPU
+                        # Second half → exit of focusing quad
+                        states = torch.matmul(states, M_h2[ci]) + D_h2[ci]
+                        if self.bpm_mode in ("after_focusing", "both"):
+                            bpm_col = (2 * ci + 1) if self.bpm_mode == "both" else ci
+                            record_buf(buf, t_rel, bpm_col)
+
                 cpu_chunk = buf.cpu().numpy()
-                bpm_x[:, t_start:t_end, :] = cpu_chunk[..., 0]
+                bpm_x[:,  t_start:t_end, :] = cpu_chunk[..., 0]
                 bpm_xp[:, t_start:t_end, :] = cpu_chunk[..., 1]
-                bpm_y[:, t_start:t_end, :] = cpu_chunk[..., 2]
+                bpm_y[:,  t_start:t_end, :] = cpu_chunk[..., 2]
                 bpm_yp[:, t_start:t_end, :] = cpu_chunk[..., 3]
-                del buf  # Free GPU memory immediately
+                del buf
+
             else:
-                # STREAMING-to-cpu Logic: Direct write to handle 100,000+ turns safely
+                # ── STREAMING ──────────────────────────────────────────────
                 for turn in range(t_start, t_end):
-                    for cell_idx in range(self.n_FODO):
-                        states = (
-                            torch.matmul(states, cell_M_stack[cell_idx])
-                            + cell_D_stack[cell_idx]
-                        )
-                        cpu_s = states.cpu().numpy()
-                        bpm_x[:, turn, cell_idx] = cpu_s[:, 0]
-                        bpm_xp[:, turn, cell_idx] = cpu_s[:, 1]
-                        bpm_y[:, turn, cell_idx] = cpu_s[:, 2]
-                        bpm_yp[:, turn, cell_idx] = cpu_s[:, 3]
+                    for ci in range(self.n_FODO):
+                        # First half → exit of defocusing quad
+                        states = torch.matmul(states, M_h1[ci]) + D_h1[ci]
+                        if self.bpm_mode in ("after_defocusing", "both"):
+                            bpm_col = 2 * ci if self.bpm_mode == "both" else ci
+                            record(bpm_col, turn)
+
+                        # Second half → exit of focusing quad
+                        states = torch.matmul(states, M_h2[ci]) + D_h2[ci]
+                        if self.bpm_mode in ("after_focusing", "both"):
+                            bpm_col = (2 * ci + 1) if self.bpm_mode == "both" else ci
+                            record(bpm_col, turn)
 
             gc.collect()
-
             if device.type.startswith("cuda"):
                 torch.cuda.empty_cache()
 
@@ -2312,53 +2379,56 @@ class SynchrotronSimulator:
 
     def _precompute_cell_matrices(self, device):
         """
-        Combines individual element matrices into a single cell-wise transfer matrix
-        and kick vector to optimize GPU throughput.
-        """
-        cell_M_combined = []
-        cell_D_combined = []
+        Precomputes TWO half-cell transfer matrices per FODO cell:
+        M_h1 / D_h1 : product of elements [0..3]  — ends at exit of defocusing quad
+        M_h2 / D_h2 : product of elements [4..end] — ends at exit of focusing quad
 
+        Stored transposed (M.T) so batch matmul is: states @ M.T
+        """
         len_per_cell = np.array(self.len_per_cell_list, dtype=np.int64)
         cell_starts = np.cumsum(np.concatenate([[0], len_per_cell[:-1]]))
 
+        BPM1_SPLIT = 4  # elements 0,1,2,3 → defocusing quad is element index 3
+
+        M_h1_list, D_h1_list = [], []
+        M_h2_list, D_h2_list = [], []
+
         for cell_idx in range(self.n_FODO):
-            n_elems = len_per_cell[cell_idx]
-            global_base_idx = cell_starts[cell_idx]
+            n_elems = int(len_per_cell[cell_idx])
+            base = int(cell_starts[cell_idx])
 
-            # Initialize cell-level identity and zero-kick
-            M_total = torch.eye(4, device=device, dtype=torch.float64)
-            D_total = torch.zeros(4, device=device, dtype=torch.float64)
+            def compose(start, stop):
+                M = torch.eye(4, device=device, dtype=torch.float64)
+                D = torch.zeros(4, device=device, dtype=torch.float64)
+                for i in range(start, min(stop, n_elems)):
+                    M_e = torch.from_numpy(
+                        self.M_lattice_4x4[base + i]
+                    ).to(device, dtype=torch.float64)
+                    D_e = torch.from_numpy(
+                        self.D_lattice_4x1[base + i]
+                    ).to(device, dtype=torch.float64)
+                    D = M_e @ D + D_e
+                    M = M_e @ M
+                return M.T, D  # .T for batch: states @ M.T
 
-            for elem_idx in range(n_elems):
-                idx = global_base_idx + elem_idx
-                # Convert lattice matrices to PyTorch tensors
-                M_e = (
-                    torch.from_numpy(self.M_lattice_4x4[idx])
-                    .to(device)
-                    .to(torch.float64)
-                )
-                D_e = (
-                    torch.from_numpy(self.D_lattice_4x1[idx])
-                    .to(device)
-                    .to(torch.float64)
-                )
+            M1T, D1 = compose(0, BPM1_SPLIT)
+            M2T, D2 = compose(BPM1_SPLIT, n_elems)
 
-                # Composition logic: X_new = M_e @ (M_prev @ X + D_prev) + D_e
-                D_total = torch.matmul(M_e, D_total) + D_e
-                M_total = torch.matmul(M_e, M_total)
+            M_h1_list.append(M1T);  D_h1_list.append(D1)
+            M_h2_list.append(M2T);  D_h2_list.append(D2)
 
-            # Store transposed for batch multiplication: states @ M_total.T
-            cell_M_combined.append(M_total.T)
-            cell_D_combined.append(D_total)
+        return (
+            torch.stack(M_h1_list), torch.stack(D_h1_list),
+            torch.stack(M_h2_list), torch.stack(D_h2_list),
+        )
 
-        return torch.stack(cell_M_combined), torch.stack(cell_D_combined)
 
     def _allocate_bpm_outputs(self, nb_particles):
         """
         Allocates arrays for BPM readings.
         Uses memory-mapped files on SSD if self.use_memmap is True.
         """
-        bpm_shape = (nb_particles, self.n_turns, self.n_FODO)
+        bpm_shape = (nb_particles, self.n_turns, self.n_BPMs_total)
 
         if self.use_memmap:
             import uuid
@@ -5071,6 +5141,7 @@ class SimulationRunner:
                 "correct_injection_offset", False
             ),
             k_errors=config.get("k_errors", None),
+            bpm_mode=merged_config.get("bpm_mode", "after_focusing"),
         )
 
         if verbose:

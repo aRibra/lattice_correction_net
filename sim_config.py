@@ -192,6 +192,7 @@ common_parameters = {
     "quad_tilt_angle_range": (0, 0.010),  # 10 mrad (1e-3 = 1 mrad)
     "dipole_tilt_angle_range": (0, 0.05),  # 50 mrad
     "com_delta_range": (-5e-05, 5e-05),
+    "bpm_mode": "after_focusing",  # Options: "after_focusing" | "after_defocusing" | "both"
     "use_pinn": True,
     "pinn_lambda": 0.005,
 }

@@ -631,7 +631,7 @@ class DataAutomation:
                         )
                         fodo_cell_indices = self.common_parameters.get(
                             "fodo_cell_indices",
-                            list(range(simulator_with_error.n_FODO)),
+                            list(range(simulator_with_error.n_BPMs_total)),
                         )
                         planes = self.common_parameters.get("planes", ["x", "y"])
 

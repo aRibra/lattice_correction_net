@@ -809,7 +809,7 @@ def train_model(
 
     if use_pinn:
         n_BPMs = merged_config.get(
-            "n_FODO", model.data_shapes["raw_input_tensors_shape"][2]
+            "n_BPMs_total", model.data_shapes["raw_input_tensors_shape"][2]
         )
         n_planes = model.data_shapes["raw_input_tensors_shape"][3]
 
